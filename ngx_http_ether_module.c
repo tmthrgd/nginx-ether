@@ -2,16 +2,32 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#define TIMER_DELAY 15*60*1000
-
 typedef struct {
 	ngx_str_t serf_address;
 	ngx_str_t serf_auth;
 	ngx_msec_t timeout;
 } srv_conf_t;
 
+typedef enum {
+	WAITING = 0,
+	HANDSHAKING,
+	AUTHENTICATING,
+	SUBSCRIBING
+} state_et;
+
+typedef struct {
+	ngx_str_t auth;
+	// ngx_msec_t timeout;
+
+	ngx_http_ssl_srv_conf_t *ssl;
+	state_et state;
+} state_st;
+
 static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
+
+static void read_handler(ngx_event_t *rev);
+static void write_handler(ngx_event_t *wev);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
 
@@ -41,8 +57,12 @@ static ngx_command_t module_commands[] = {
 	  offsetof(srv_conf_t, timeout),
 	  NULL },
 
+	// TODO: configurable memcached pool and keygen event names
+
 	ngx_null_command
 };
+
+// TODO: support ssl_session_timeout
 
 static ngx_http_module_t module_ctx = {
 	NULL,            /* preconfiguration */
@@ -73,7 +93,7 @@ ngx_module_t ngx_http_ether_module = {
 	NGX_MODULE_V1_PADDING
 };
 
-static void *ngx_http_zircon_create_srv_conf(ngx_conf_t *cf)
+static void *create_srv_conf(ngx_conf_t *cf)
 {
 	srv_conf_t *zscf;
 
@@ -94,7 +114,7 @@ static void *ngx_http_zircon_create_srv_conf(ngx_conf_t *cf)
 	return zscf;
 }
 
-static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
 	srv_conf_t *prev = parent;
 	srv_conf_t *conf = child;
@@ -102,6 +122,7 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 	ngx_url_t u;
 	ngx_peer_connection_t *pc = NULL;
 	ngx_connection_t *c;
+	state_st *state = NULL;
 
 	ssl = ngx_http_conf_get_module_srv_conf(cf, ngx_http_ssl_module);
 
@@ -120,18 +141,18 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 			goto error;
 		}
 
-		if (ssl->ssl_session_ticket_key) {
+		if (ssl->session_ticket_keys) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used alongside the ssl_session_ticket_key directive");
 			goto error;
 		}
 
-		if (ssl->builtin_session_cache != NGX_SSL_NO_SCACHE) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_cache being set to off");
+		if (ssl->builtin_session_cache != NGX_SSL_NONE_SCACHE) {
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_cache being unset (none)");
 			goto error;
 		}
 
 		if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
-			ngx_str_set(conf->serf_address, "127.0.0.1:7373");
+			ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
 		}
 
 		// TODO: does this (from here) need to move somewhere else?
@@ -145,6 +166,11 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 
 		if (ngx_parse_url(cf->pool, &u) != NGX_OK || !u.addrs || !u.addrs[0].sockaddr) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "invalid url given in ether directive");
+			goto error;
+		}
+
+		state = ngx_pcalloc(cf->cycle->pool, sizeof(state_st));
+		if (!state) {
 			goto error;
 		}
 
@@ -166,12 +192,16 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 			goto error;
 		}
 
+		state->auth.data = conf->serf_auth.data;
+		state->auth.len = conf->serf_auth.len;
+
+		state->ssl = ssl;
+
 		c = pc->connection;
+		c->data = state;
 
-		c->data = ssl;
-
-		// c->write->handler = ;
-		// c->read->handler = ;
+		c->write->handler = write_handler;
+		c->read->handler = read_handler;
 
 		if (conf->timeout != NGX_CONF_UNSET_MSEC) {
 			// set timeout
@@ -179,17 +209,9 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 
 		// add closer
 
-		// send handshake
+		state->state = HANDSHAKING;
 
-		if (conf->serf_auth.len) {
-			// send auth
-		}
-
-		// subscribe to key event
-
-		// get memcache servers
-
-		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl->ctx, session_ticket_key_handler) == 0) {
+		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler) == 0) {
 			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 				"nginx was built with Session Tickets support, however, "
 				"now it is linked dynamically to an OpenSSL library "
@@ -197,11 +219,11 @@ static char *ngx_http_zircon_merge_srv_conf(ngx_conf_t *cf, void *parent, void *
 			goto error;
 		}
 
-		SSL_CTX_set_session_cache_mode(ssl->ssl->ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
+		SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
 
-		SSL_CTX_sess_set_new_cb(ssl->ssl->ctx, new_session_handler);
-		SSL_CTX_sess_set_get_cb(ssl->ssl->ctx, get_cached_session_handler);
-		SSL_CTX_sess_set_remove_cb(ssl->ssl->ctx, remove_session_handler);
+		SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
+		SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
+		SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
 	}
 
 	return NGX_CONF_OK;
@@ -214,10 +236,90 @@ error:
 			ngx_close_connection(pc->connection);
 			pc->connection = NULL;
 		}
+
+		ngx_pfree(cf->cycle->pool, pc);
+	}
+
+	if (state) {
+		ngx_pfree(cf->cycle->pool, state);
 	}
 
 	return NGX_CONF_ERROR;
 }
+
+static void read_handler(ngx_event_t *rev)
+{
+	ngx_connection_t *c;
+	state_st *state;
+
+	c = rev->data;
+	state = c->data;
+
+	// recv data
+
+	switch (state->state) {
+		case WAITING:
+			// process response
+
+			state->state = WAITING; // NOP
+			break;
+		case HANDSHAKING:
+			// check response
+
+			if (state->auth.len) {
+				state->state = AUTHENTICATING;
+			} else {
+				state->state = SUBSCRIBING;
+			}
+
+			break;
+		case AUTHENTICATING:
+			// check response
+
+			state->state = SUBSCRIBING;
+			break;
+		case SUBSCRIBING:
+			// check response
+
+			state->state = WAITING;
+			break;
+	}
+
+	// if (ngx_handle_read_event(rev, 0) != NGX_OK) {
+}
+
+static void write_handler(ngx_event_t *wev)
+{
+	ngx_connection_t *c;
+	state_st *state;
+
+	c = wev->data;
+	state = c->data;
+
+	switch (state->state) {
+		case WAITING:
+			break;
+		case HANDSHAKING:
+			// marshal handshake
+			break;
+		case AUTHENTICATING:
+			// marshal authentication
+			break;
+		case SUBSCRIBING:
+			// marshal event subscription
+			break;
+	}
+
+	// send data
+
+	// if (ngx_handle_write_event(c->write, u->conf->send_lowat) != NGX_OK) {
+}
+
+#ifdef OPENSSL_NO_SHA256
+#	define ngx_ssl_session_ticket_md EVP_sha1
+#else
+#	define ngx_ssl_session_ticket_md EVP_sha256
+#endif
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
 {
@@ -284,10 +386,13 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
 	// add
+
+	return 0;
 }
 
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len, int *copy)
 {
+#if 0
 	if (!started) {
 		// get
 	}
@@ -297,6 +402,9 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	return SSL_magic_pending_session_ptr();
+#else
+	return NULL;
+#endif
 }
 
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
