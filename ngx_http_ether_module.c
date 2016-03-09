@@ -336,6 +336,49 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	return NGX_CONF_OK;
 }
 
+static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size, ngx_log_t *log)
+{
+	size_t off = 0;
+	msgpack_unpack_return ret;
+
+	ret = msgpack_unpack_next(und, (char *)recv->pos, recv->last - recv->pos, &off);
+	switch (ret) {
+		case MSGPACK_UNPACK_EXTRA_BYTES:
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next succeeded but left trailing bytes");
+		case MSGPACK_UNPACK_SUCCESS:
+			recv->pos += off;
+			return NGX_OK;
+		case MSGPACK_UNPACK_CONTINUE:
+			if (size != NGX_AGAIN) {
+				ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with unexpected eof");
+
+				recv->pos += off;
+
+				if (recv->pos == recv->last) {
+					recv->pos = recv->start;
+					recv->last = recv->start;
+				}
+			}
+
+			return NGX_AGAIN;
+		case MSGPACK_UNPACK_NOMEM_ERROR:
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with nomem error");
+
+			return NGX_ABORT;
+		default: /* MSGPACK_UNPACK_PARSE_ERROR */
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with parse error");
+
+			recv->pos += off;
+
+			if (recv->pos == recv->last) {
+				recv->pos = recv->start;
+				recv->last = recv->start;
+			}
+
+			return NGX_ERROR;
+	}
+}
+
 static void dummy_write_handler(ngx_event_t *wev) { }
 
 static void read_handler(ngx_event_t *rev)
@@ -344,13 +387,12 @@ static void read_handler(ngx_event_t *rev)
 	peer_st *peer;
 	ssize_t size, n;
 	msgpack_unpacked und;
-	msgpack_unpack_return ret;
-	size_t off;
 	uint32_t i;
 	msgpack_object_str *str;
 	uint64_t seq = 0;
 	event_type_et type = 0;
 	msgpack_object_bin payload;
+	msgpack_object_kv* ptr;
 	void *hdr_start;
 	u_char *new_buf;
 	key_st *key;
@@ -416,45 +458,15 @@ static void read_handler(ngx_event_t *rev)
 
 	hdr_start = peer->recv.pos;
 
-	off = 0;
-	ret = msgpack_unpack_next(&und, (char *)peer->recv.pos, peer->recv.last - peer->recv.pos, &off);
-	switch (ret) {
-		case MSGPACK_UNPACK_EXTRA_BYTES:
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next succeeded but left trailing bytes");
-		case MSGPACK_UNPACK_SUCCESS:
-			peer->recv.pos += off;
+	switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
+		case NGX_OK:
 			break;
-		case MSGPACK_UNPACK_CONTINUE:
-			if (size != NGX_AGAIN) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with unexpected eof");
-
-				peer->recv.pos += off;
-
-				if (peer->recv.pos == peer->recv.last) {
-					peer->recv.pos = peer->recv.start;
-					peer->recv.last = peer->recv.start;
-				}
-			}
-
+		case NGX_AGAIN:
+		case NGX_ERROR:
 			msgpack_unpacked_destroy(&und);
 			return;
-		case MSGPACK_UNPACK_PARSE_ERROR:
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with parse error");
-
-			peer->recv.pos += off;
-
-			if (peer->recv.pos == peer->recv.last) {
-				peer->recv.pos = peer->recv.start;
-				peer->recv.last = peer->recv.start;
-			}
-
-			msgpack_unpacked_destroy(&und);
-			return;
-		case MSGPACK_UNPACK_NOMEM_ERROR:
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with nomem error");
-
-			msgpack_unpacked_destroy(&und);
-			return; // exit?
+		case NGX_ABORT:
+			exit(2); // something else?
 	}
 
 	if (und.data.type != MSGPACK_OBJECT_MAP) {
@@ -465,24 +477,26 @@ static void read_handler(ngx_event_t *rev)
 	}
 
 	for (i = 0; i < und.data.via.map.size; i++) {
-		if (und.data.via.map.ptr[i].key.type != MSGPACK_OBJECT_STR) {
+		ptr = &und.data.via.map.ptr[i];
+
+		if (ptr->key.type != MSGPACK_OBJECT_STR) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect key to be string");
 
 			msgpack_unpacked_destroy(&und);
 			return;
 		}
 
-		str = &und.data.via.map.ptr[i].key.via.str;
+		str = &ptr->key.via.str;
 
 		if (ngx_strncmp(str->ptr, "Seq", str->size) == 0) {
-			if (und.data.via.map.ptr[i].val.type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+			if (ptr->val.type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect seq value to be positive integer");
 
 				msgpack_unpacked_destroy(&und);
 				return;
 			}
 
-			seq = und.data.via.map.ptr[i].val.via.u64;
+			seq = ptr->val.via.u64;
 
 			if (peer->expected_seq && seq != peer->expected_seq) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC message");
@@ -495,14 +509,14 @@ static void read_handler(ngx_event_t *rev)
 		}
 
 		if (ngx_strncmp(str->ptr, "Error", str->size) == 0) {
-			if (und.data.via.map.ptr[i].val.type != MSGPACK_OBJECT_STR) {
+			if (ptr->val.type != MSGPACK_OBJECT_STR) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect error value to be string");
 
 				msgpack_unpacked_destroy(&und);
 				return;
 			}
 
-			str = &und.data.via.map.ptr[i].val.via.str;
+			str = &ptr->val.via.str;
 			if (str->size) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ether RPC error: %*s", str->size, str->ptr);
 
@@ -529,35 +543,16 @@ static void read_handler(ngx_event_t *rev)
 				break;
 			}
 
-			off = 0;
-			ret = msgpack_unpack_next(&und, (char *)peer->recv.pos, peer->recv.last - peer->recv.pos, &off);
-			switch (ret) {
-				case MSGPACK_UNPACK_EXTRA_BYTES:
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next succeeded but left trailing bytes");
-				case MSGPACK_UNPACK_SUCCESS:
-					peer->recv.pos += off;
+			switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
+				case NGX_OK:
 					break;
-				case MSGPACK_UNPACK_CONTINUE:
+				case NGX_AGAIN:
 					peer->recv.pos = hdr_start;
-
-					if (size != NGX_AGAIN) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with unexpected eof");
-					}
-
+				case NGX_ERROR:
 					msgpack_unpacked_destroy(&und);
 					return;
-				case MSGPACK_UNPACK_PARSE_ERROR:
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with parse error");
-
-					peer->recv.pos += off;
-
-					msgpack_unpacked_destroy(&und);
-					return;
-				case MSGPACK_UNPACK_NOMEM_ERROR:
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "msgpack_unpack_next failed with nomem error");
-
-					msgpack_unpacked_destroy(&und);
-					return;
+				case NGX_ABORT:
+					exit(2); // something else?
 			}
 
 			if (und.data.type != MSGPACK_OBJECT_MAP) {
@@ -570,17 +565,26 @@ static void read_handler(ngx_event_t *rev)
 			memset(&payload, 0, sizeof(msgpack_object_bin));
 
 			for (i = 0; i < und.data.via.map.size; i++) {
-				if (und.data.via.map.ptr[i].key.type != MSGPACK_OBJECT_STR) {
+				ptr = &und.data.via.map.ptr[i];
+
+				if (ptr->key.type != MSGPACK_OBJECT_STR) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
 
 					msgpack_unpacked_destroy(&und);
 					return;
 				}
 
-				str = &und.data.via.map.ptr[i].key.via.str;
+				str = &ptr->key.via.str;
 
 				if (ngx_strncmp(str->ptr, "Event", str->size) == 0) {
-					str = &und.data.via.map.ptr[i].val.via.str;
+					if (ptr->val.type != MSGPACK_OBJECT_STR) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+
+						msgpack_unpacked_destroy(&und);
+						return;
+					}
+
+					str = &ptr->val.via.str;
 
 					if (ngx_strncmp(str->ptr, "user", str->size) == 0) {
 						is_user_ev = 1;
@@ -591,50 +595,48 @@ static void read_handler(ngx_event_t *rev)
 					break;
 				}
 
-				if (ngx_strncmp(str->ptr, "LTime", str->size) == 0) {
-					// ignore for now, positive integer
-					continue;
-				}
-
 				if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
-					str = &und.data.via.map.ptr[i].val.via.str;
+					if (ptr->val.type != MSGPACK_OBJECT_STR) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+
+						msgpack_unpacked_destroy(&und);
+						return;
+					}
+
+					str = &ptr->val.via.str;
 
 					if (ngx_strncmp(str->ptr, INSTALL_KEY_EVENT, str->size) == 0) {
 						type = INSTALL_KEY;
-						continue;
-					}
-
-					if (ngx_strncmp(str->ptr, REMOVE_KEY_EVENT, str->size) == 0) {
+					} else if (ngx_strncmp(str->ptr, REMOVE_KEY_EVENT, str->size) == 0) {
 						type = REMOVE_KEY;
-						continue;
-					}
-
-					if (ngx_strncmp(str->ptr, SET_DEFAULT_KEY_EVENT, str->size) == 0) {
+					} else if (ngx_strncmp(str->ptr, SET_DEFAULT_KEY_EVENT, str->size) == 0) {
 						type = SET_DEFAULT_KEY;
-						continue;
+					} else {
+						// event not subscribed to
+						break;
 					}
 
-					// event not subscribed to
-					break;
+					continue;
 				}
 
 				if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
-					if (und.data.via.map.ptr[i].val.type != MSGPACK_OBJECT_BIN && und.data.via.map.ptr[i].val.type != MSGPACK_OBJECT_STR) {
+					if (ptr->val.type != MSGPACK_OBJECT_BIN && ptr->val.type != MSGPACK_OBJECT_STR) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect payload to be byte string");
 
 						msgpack_unpacked_destroy(&und);
 						return;
 					}
 
-					payload.size = und.data.via.map.ptr[i].val.via.bin.size;
-					payload.ptr = und.data.via.map.ptr[i].val.via.bin.ptr;
+					payload.size = ptr->val.via.bin.size;
+					payload.ptr = ptr->val.via.bin.ptr;
 					continue;
 				}
 
-				if (ngx_strncmp(str->ptr, "Coalesce", str->size) == 0) {
-					// ignore, bool
-					continue;
-				}
+				/*
+				 * ignored key value pairs:
+				 * 	- LTime: positive integer
+				 * 	- Coalesce: boolean
+				 */
 			}
 
 			if (!is_user_ev || !type) {
