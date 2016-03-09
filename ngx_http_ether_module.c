@@ -314,6 +314,10 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			return NGX_CONF_ERROR;
 		}
 
+#ifdef SSL_OP_NO_TICKET
+		SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
+#endif /* SSL_OP_NO_TICKET */
+
 		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler) == 0) {
 			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 				"nginx was built with Session Tickets support, however, "
@@ -734,6 +738,10 @@ static void read_handler(ngx_event_t *rev)
 
 						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 							peer->default_ticket_key = key;
+
+#ifdef SSL_OP_NO_TICKET
+							SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+#endif /* SSL_OP_NO_TICKET */
 							break;
 						}
 					}
