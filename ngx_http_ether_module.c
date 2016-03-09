@@ -248,6 +248,10 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			return NGX_CONF_ERROR;
 		}
 
+		if (ngx_strcmp(conf->serf_address.data, "off") == 0) {
+			return NGX_CONF_OK;
+		}
+
 		if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
 			ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
 		}
