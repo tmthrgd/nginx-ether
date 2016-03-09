@@ -57,7 +57,6 @@ typedef struct {
 	msgpack_packer pk;
 
 	ngx_queue_t ticket_keys;
-	ngx_atomic_t ticket_keys_rwlock;
 	key_st *default_ticket_key;
 } peer_st;
 
@@ -100,8 +99,6 @@ static ngx_command_t module_commands[] = {
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(srv_conf_t, timeout),
 	  NULL },
-
-	// TODO: configurable memcached pool and keygen event names
 
 	ngx_null_command
 };
@@ -189,10 +186,6 @@ error:
 			ngx_close_connection(c);
 			pc->connection = NULL;
 		}
-
-		if (pc->free) {
-			(void) pc->free(pc, pc->data, 0);
-		}
 	}
 
 	return NGX_ERROR;
@@ -225,8 +218,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	srv_conf_t *conf = child;
 	ngx_http_ssl_srv_conf_t *ssl;
 	ngx_url_t u;
-	peer_st *peer = NULL;
-	ngx_peer_connection_t *pc = NULL;
+	peer_st *peer;
+	ngx_peer_connection_t *pc;
 
 	ssl = ngx_http_conf_get_module_srv_conf(cf, ngx_http_ssl_module);
 
@@ -236,30 +229,28 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	if (conf->timeout != NGX_CONF_UNSET_MSEC) {
 		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether_timeout directive not implemented");
-		goto error;
+		return NGX_CONF_ERROR;
 	}
 
 	if (conf->serf_address.len) {
 		if (!ssl->session_tickets) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_tickets being enabled");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		if (ssl->session_ticket_keys) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used alongside the ssl_session_ticket_key directive");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		if (ssl->builtin_session_cache != NGX_SSL_NONE_SCACHE) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_cache being unset (none)");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
 			ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
 		}
-
-		// TODO: does this (from here) need to move somewhere else?
 
 		ngx_memzero(&u, sizeof(ngx_url_t));
 
@@ -270,19 +261,19 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 		if (ngx_parse_url(cf->pool, &u) != NGX_OK || !u.addrs || !u.addrs[0].sockaddr) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "invalid url given in ether directive");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		if (!peers.elts) {
 			if (ngx_array_init(&peers, cf->cycle->pool, 16, sizeof(peer_st)) != NGX_OK) {
 				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ngx_array_init failed");
-				goto error;
+				return NGX_CONF_ERROR;
 			}
 		}
 
 		peer = ngx_array_push(&peers);
 		if (!peer) {
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		ngx_memzero(peer, sizeof(peer_st));
@@ -314,13 +305,13 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 			if (g_ssl_ctx_exdata_peer_index == -1) {
 				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_get_ex_new_index failed");
-				goto error;
+				return NGX_CONF_ERROR;
 			}
 		}
 
 		if (!SSL_CTX_set_ex_data(ssl->ssl.ctx, g_ssl_ctx_exdata_peer_index, peer)) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_set_ex_data failed");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler) == 0) {
@@ -328,7 +319,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 				"nginx was built with Session Tickets support, however, "
 				"now it is linked dynamically to an OpenSSL library "
 				"which has no tlsext support");
-			goto error;
+			return NGX_CONF_ERROR;
 		}
 
 		SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
@@ -339,13 +330,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	}
 
 	return NGX_CONF_OK;
-
-error:
-	if (pc && pc->free) {
-		(void) pc->free(pc, pc->data, 0);
-	}
-
-	return NGX_CONF_ERROR;
 }
 
 static void dummy_write_handler(ngx_event_t *wev) { }
@@ -653,8 +637,6 @@ static void read_handler(ngx_event_t *rev)
 				break;
 			}
 
-			ngx_rwlock_wlock(&peer->ticket_keys_rwlock);
-
 			switch (type) {
 				case INSTALL_KEY:
 					if (payload.size != 48) {
@@ -775,8 +757,6 @@ static void read_handler(ngx_event_t *rev)
 			ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
 			}
 #endif
-
-			ngx_rwlock_unlock(&peer->ticket_keys_rwlock);
 
 			ngx_memzero((char *)payload.ptr, payload.size);
 			break;
@@ -958,7 +938,6 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 	peer_st *peer;
 	key_st *key;
 	ngx_queue_t *q;
-	int ret;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -971,13 +950,10 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 		return -1;
 	}
 
-	ngx_rwlock_rlock(&peer->ticket_keys_rwlock);
-
 	if (enc) {
 		key = peer->default_ticket_key;
 		if (!key) {
-			ret = -1;
-			goto done;
+			return -1;
 		}
 
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
@@ -990,8 +966,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 		HMAC_Init_ex(hctx, key->key.hmac_key, 16, ngx_ssl_session_ticket_md(), NULL);
 		ngx_memcpy(name, key->key.name, 16);
 
-		ret = 0;
-		goto done;
+		return 0;
 	} else {
 		if (!ngx_queue_empty(&peer->ticket_keys)) {
 			for (q = ngx_queue_head(&peer->ticket_keys);
@@ -1009,8 +984,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			"ssl session ticket decrypt, key: \"%*s\" not found",
 			ngx_hex_dump(buf, name, 16) - buf, buf);
 
-		ret = 0;
-		goto done;
+		return 0;
 	found:
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
@@ -1022,17 +996,11 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 		EVP_DecryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
 
 		if (key->was_default) {
-			ret = 2 /* renew */;
-			goto done;
+			return 2 /* renew */;
 		} else {
-			ret = 1;
-			goto done;
+			return 1;
 		}
 	}
-
-done:
-	ngx_rwlock_unlock(&peer->ticket_keys_rwlock);
-	return ret;
 }
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
