@@ -639,14 +639,14 @@ static void read_handler(ngx_event_t *rev)
 
 			switch (type) {
 				case INSTALL_KEY:
-					if (payload.size != 48) {
+					if (payload.size != SSL_TICKET_KEY_NAME_LEN + 32) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 						break;
 					}
 
 					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 						"ssl session ticket key install: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, 16) - buf, buf);
+						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 					if (!ngx_queue_empty(&peer->ticket_keys)) {
 						for (q = ngx_queue_head(&peer->ticket_keys);
@@ -654,7 +654,7 @@ static void read_handler(ngx_event_t *rev)
 							q = ngx_queue_next(q)) {
 							key = ngx_queue_data(q, key_st, queue);
 
-							if (ngx_memcmp(payload.ptr, key->key.name, 16) == 0) {
+							if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 								have_key = 1;
 								break;
 							}
@@ -672,21 +672,21 @@ static void read_handler(ngx_event_t *rev)
 						break;
 					}
 
-					memcpy(key->key.name, payload.ptr, 16);
-					memcpy(key->key.aes_key, payload.ptr + 16, 16);
-					memcpy(key->key.hmac_key, payload.ptr + 32, 16);
+					memcpy(key->key.name, payload.ptr, SSL_TICKET_KEY_NAME_LEN);
+					memcpy(key->key.aes_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
+					memcpy(key->key.hmac_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
 
 					ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 					break;
 				case REMOVE_KEY:
-					if (payload.size != 16) {
+					if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 						break;
 					}
 
 					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 						"ssl session ticket key removal: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, 16) - buf, buf);
+						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 					if (ngx_queue_empty(&peer->ticket_keys)) {
 						break;
@@ -697,7 +697,7 @@ static void read_handler(ngx_event_t *rev)
 						q = ngx_queue_next(q)) {
 						key = ngx_queue_data(q, key_st, queue);
 
-						if (ngx_memcmp(payload.ptr, key->key.name, 16) == 0) {
+						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 							ngx_queue_remove(q);
 
 							ngx_memzero(&key->key, sizeof(key->key));
@@ -708,14 +708,14 @@ static void read_handler(ngx_event_t *rev)
 
 					break;
 				case SET_DEFAULT_KEY:
-					if (payload.size != 16) {
+					if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 						break;
 					}
 
 					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 						"ssl session ticket key set default: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, 16) - buf, buf);
+						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 					if (ngx_queue_empty(&peer->ticket_keys)) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: without any keys");
@@ -732,7 +732,7 @@ static void read_handler(ngx_event_t *rev)
 						q = ngx_queue_next(q)) {
 						key = ngx_queue_data(q, key_st, queue);
 
-						if (ngx_memcmp(payload.ptr, key->key.name, 16) == 0) {
+						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 							peer->default_ticket_key = key;
 							break;
 						}
@@ -958,13 +958,13 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket encrypt, key: \"%*s\" (%s session)",
-			ngx_hex_dump(buf, key->key.name, 16) - buf, buf,
+			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			SSL_session_reused(ssl_conn) ? "reused" : "new");
 
 		RAND_bytes(iv, 16);
 		EVP_EncryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
 		HMAC_Init_ex(hctx, key->key.hmac_key, 16, ngx_ssl_session_ticket_md(), NULL);
-		ngx_memcpy(name, key->key.name, 16);
+		ngx_memcpy(name, key->key.name, SSL_TICKET_KEY_NAME_LEN);
 
 		return 0;
 	} else {
@@ -974,7 +974,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 				q = ngx_queue_next(q)) {
 				key = ngx_queue_data(q, key_st, queue);
 
-				if (ngx_memcmp(name, key->key.name, 16) == 0) {
+				if (ngx_memcmp(name, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 					goto found;
 				}
 			}
@@ -982,13 +982,13 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 		ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\" not found",
-			ngx_hex_dump(buf, name, 16) - buf, buf);
+			ngx_hex_dump(buf, name, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 		return 0;
 	found:
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
-			ngx_hex_dump(buf, key->key.name, 16) - buf, buf,
+			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			(peer->default_ticket_key != NULL && key == peer->default_ticket_key)
 				? " (default)" : "");
 
