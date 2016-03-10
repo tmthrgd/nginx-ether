@@ -351,24 +351,9 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 			recv->pos += off;
 			return NGX_OK;
 		case MSGPACK_UNPACK_CONTINUE:
-			if (size != NGX_AGAIN) {
-				ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with unexpected eof");
-
-				recv->pos += off;
-
-				if (recv->pos == recv->last) {
-					recv->pos = recv->start;
-					recv->last = recv->start;
-				}
+			if (size == NGX_AGAIN) {
+				return NGX_AGAIN;
 			}
-
-			return NGX_AGAIN;
-		case MSGPACK_UNPACK_NOMEM_ERROR:
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with nomem error");
-
-			return NGX_ABORT;
-		default: /* MSGPACK_UNPACK_PARSE_ERROR */
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with parse error");
 
 			recv->pos += off;
 
@@ -377,6 +362,20 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 				recv->last = recv->start;
 			}
 
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with unexpected eof");
+			return NGX_AGAIN;
+		case MSGPACK_UNPACK_NOMEM_ERROR:
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with nomem error");
+			return NGX_ABORT;
+		default: /* MSGPACK_UNPACK_PARSE_ERROR */
+			recv->pos += off;
+
+			if (recv->pos == recv->last) {
+				recv->pos = recv->start;
+				recv->last = recv->start;
+			}
+
+			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with parse error");
 			return NGX_ERROR;
 	}
 }
