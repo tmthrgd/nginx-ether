@@ -196,7 +196,7 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	srv_conf_t *escf;
 
 	escf = ngx_pcalloc(cf->pool, sizeof(srv_conf_t));
-	if (escf == NULL) {
+	if (!escf) {
 		return NULL;
 	}
 
@@ -428,7 +428,7 @@ static void read_handler(ngx_event_t *rev)
 			size = peer->recv.end - peer->recv.start;
 
 			new_buf = ngx_palloc(c->pool, size * 2);
-			if (new_buf == NULL) {
+			if (!new_buf) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated new recv buffer");
 				return;
 			}
@@ -485,20 +485,16 @@ static void read_handler(ngx_event_t *rev)
 		}
 
 		str = &ptr->key.via.str;
-
 		if (ngx_strncmp(str->ptr, "Seq", str->size) == 0) {
 			if (ptr->val.type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect seq value to be positive integer");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect Seq to be positive integer");
 				goto done;
 			}
 
 			seq = ptr->val.via.u64;
-			continue;
-		}
-
-		if (ngx_strncmp(str->ptr, "Error", str->size) == 0) {
+		} else if (ngx_strncmp(str->ptr, "Error", str->size) == 0) {
 			if (ptr->val.type != MSGPACK_OBJECT_STR) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect error value to be string");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect Error to be string");
 				goto done;
 			}
 
@@ -507,8 +503,8 @@ static void read_handler(ngx_event_t *rev)
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ether RPC error: %*s", str->size, str->ptr);
 				goto done;
 			}
-
-			continue;
+		} else {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, unrecognised key: %*s", str->size, str->ptr);
 		}
 	}
 
@@ -576,10 +572,9 @@ static void read_handler(ngx_event_t *rev)
 			}
 
 			str = &ptr->key.via.str;
-
 			if (ngx_strncmp(str->ptr, "Event", str->size) == 0) {
 				if (ptr->val.type != MSGPACK_OBJECT_STR) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect Event to be string");
 					goto done;
 				}
 
@@ -587,41 +582,32 @@ static void read_handler(ngx_event_t *rev)
 				if (ngx_strncmp(str->ptr, "user", str->size) == 0) {
 					is_user_ev = 1;
 				}
-
-				continue;
-			}
-
-			if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
+			} else if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
 				if (ptr->val.type != MSGPACK_OBJECT_STR) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect Name to be string");
 					goto done;
 				}
 
 				event_name.size = ptr->val.via.str.size;
 				event_name.ptr = ptr->val.via.str.ptr;
-				continue;
-			}
-
-			if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
+			} else if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
 				if (ptr->val.type != MSGPACK_OBJECT_BIN && ptr->val.type != MSGPACK_OBJECT_STR) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect payload to be byte string");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect Payload to be byte string");
 					goto done;
 				}
 
 				payload.size = ptr->val.via.bin.size;
 				payload.ptr = ptr->val.via.bin.ptr;
-				continue;
+			} else if (ngx_strncmp(str->ptr, "LTime", str->size) == 0) {
+				// positive integer, ignored
+			} else if (ngx_strncmp(str->ptr, "Coalesce", str->size) == 0) {
+				// boolean, ignored
+			} else {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, unrecognised key: %*s", str->size, str->ptr);
 			}
-
-			/*
-			 * ignored key value pairs:
-			 * 	- LTime: positive integer
-			 * 	- Coalesce: boolean
-			 */
 		}
 
 		if (!is_user_ev) {
-			// only interested in user events for now
 			goto done;
 		}
 
@@ -726,7 +712,7 @@ static void read_handler(ngx_event_t *rev)
 				goto done;
 			}
 		} else {
-			// event not subscribed to
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", event_name.size, event_name.ptr);
 			goto done;
 		}
 
@@ -743,7 +729,7 @@ static void read_handler(ngx_event_t *rev)
 		}
 #endif
 	} else {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number");
+		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number: %x", seq);
 	}
 
 done:
@@ -784,7 +770,7 @@ static void write_handler(ngx_event_t *wev)
 
 		switch (peer->state) {
 			case WAITING:
-				// should never happen
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "write_handler called in WAITING state");
 				return;
 			case HANDSHAKING:
 				peer->handshake_seq = seq;
@@ -912,7 +898,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 	ssl_ctx = c->ssl->session_ctx;
 
 	peer = SSL_CTX_get_ex_data(ssl_ctx, g_ssl_ctx_exdata_peer_index);
-	if (peer == NULL) {
+	if (!peer) {
 		return -1;
 	}
 
