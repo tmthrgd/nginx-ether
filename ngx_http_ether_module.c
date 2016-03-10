@@ -967,7 +967,10 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			SSL_session_reused(ssl_conn) ? "reused" : "new");
 
-		RAND_bytes(iv, 16);
+		if (RAND_bytes(iv, 16) != 1) {
+			return -1;
+		}
+
 		EVP_EncryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
 		HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL);
 		ngx_memcpy(name, key->key.name, SSL_TICKET_KEY_NAME_LEN);
