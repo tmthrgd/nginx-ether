@@ -56,6 +56,7 @@ typedef struct {
 } peer_st;
 
 static ngx_int_t init_process(ngx_cycle_t *cycle);
+static void exit_process(ngx_cycle_t *cycle);
 
 static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -124,7 +125,7 @@ ngx_module_t ngx_http_ether_module = {
 	init_process,    /* init process */
 	NULL,            /* init thread */
 	NULL,            /* exit thread */
-	NULL,            /* exit process */
+	exit_process,    /* exit process */
 	NULL,            /* exit master */
 	NGX_MODULE_V1_PADDING
 };
@@ -144,7 +145,7 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		rc = ngx_event_connect_peer(pc);
 		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
 			ngx_log_error(NGX_LOG_EMERG, cycle->log, 0, "ngx_event_connect_peer failed");
-			goto error;
+			return NGX_ERROR;
 		}
 
 		c = pc->connection;
@@ -162,8 +163,6 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 			// set timeout
 		}
 
-		// add closer
-
 		/* The kqueue's loop interface needs it. */
 		if (rc == NGX_OK) {
 			c->write->handler(c->write);
@@ -171,8 +170,16 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 	}
 
 	return NGX_OK;
+}
 
-error:
+static void exit_process(ngx_cycle_t *cycle)
+{
+	peer_st *peer;
+	ngx_peer_connection_t *pc;
+	ngx_connection_t *c;
+	size_t i;
+
+	peer = peers.elts;
 	for (i = 0; i < peers.nelts; i++) {
 		pc = &peer[i].pc;
 		c = pc->connection;
@@ -182,8 +189,6 @@ error:
 			pc->connection = NULL;
 		}
 	}
-
-	return NGX_ERROR;
 }
 
 static void *create_srv_conf(ngx_conf_t *cf)
