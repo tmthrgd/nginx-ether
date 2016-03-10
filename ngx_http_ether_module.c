@@ -387,8 +387,8 @@ static void read_handler(ngx_event_t *rev)
 	uint32_t i;
 	msgpack_object_str *str;
 	uint64_t seq = 0;
-	msgpack_object_str event_name;
-	msgpack_object_bin payload;
+	msgpack_object_str event_name = {0};
+	msgpack_object_bin payload = {0};
 	msgpack_object_kv* ptr;
 	void *hdr_start;
 	u_char *new_buf;
@@ -398,8 +398,6 @@ static void read_handler(ngx_event_t *rev)
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
-
-	memset(&payload, 0, sizeof(msgpack_object_bin));
 
 	c = rev->data;
 	peer = c->data;
