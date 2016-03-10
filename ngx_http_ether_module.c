@@ -597,19 +597,6 @@ static void read_handler(ngx_event_t *rev)
 				event_name.size = ptr->val.via.str.size;
 				event_name.ptr = ptr->val.via.str.ptr;
 				continue;
-
-				/*if (ngx_strncmp(str->ptr, INSTALL_KEY_EVENT, str->size) == 0) {
-					type = INSTALL_KEY;
-				} else if (ngx_strncmp(str->ptr, REMOVE_KEY_EVENT, str->size) == 0) {
-					type = REMOVE_KEY;
-				} else if (ngx_strncmp(str->ptr, SET_DEFAULT_KEY_EVENT, str->size) == 0) {
-					type = SET_DEFAULT_KEY;
-				} else {
-					// event not subscribed to
-					break;
-				}
-
-				continue;*/
 			}
 
 			if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
