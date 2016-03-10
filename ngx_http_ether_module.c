@@ -320,7 +320,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 		SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler) == 0) {
+		if (!SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler)) {
 			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 				"nginx was built with Session Tickets support, however, "
 				"now it is linked dynamically to an OpenSSL library "
@@ -971,8 +971,14 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			return -1;
 		}
 
-		EVP_EncryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
-		HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL);
+		if (!EVP_EncryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv)) {
+			return -1;
+		}
+
+		if (!HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL)) {
+			return -1;
+		}
+
 		ngx_memcpy(name, key->key.name, SSL_TICKET_KEY_NAME_LEN);
 
 		return 0;
@@ -1000,8 +1006,13 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			(key == peer->default_ticket_key) ? " (default)" : "");
 
-		HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL);
-		EVP_DecryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
+		if (!HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL)) {
+			return -1;
+		}
+
+		if (!EVP_DecryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv)) {
+			return -1;
+		}
 
 		if (key->was_default) {
 			return 2 /* renew */;
