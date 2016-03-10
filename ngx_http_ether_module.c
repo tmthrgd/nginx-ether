@@ -753,7 +753,11 @@ static void read_handler(ngx_event_t *rev)
 					}
 
 					if (!peer->default_ticket_key) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key");
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key, session ticket support disabled");
+
+#ifdef SSL_OP_NO_TICKET
+						SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+#endif /* SSL_OP_NO_TICKET */
 					}
 
 					break;
@@ -1003,8 +1007,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
 			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
-			(peer->default_ticket_key != NULL && key == peer->default_ticket_key)
-				? " (default)" : "");
+			(key == peer->default_ticket_key) ? " (default)" : "");
 
 		HMAC_Init_ex(hctx, key->key.hmac_key, 16, ngx_ssl_session_ticket_md(), NULL);
 		EVP_DecryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
