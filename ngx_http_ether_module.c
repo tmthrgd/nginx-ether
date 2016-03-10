@@ -318,9 +318,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			return NGX_CONF_ERROR;
 		}
 
-#ifdef SSL_OP_NO_TICKET
 		SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
-#endif /* SSL_OP_NO_TICKET */
 
 		if (SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler) == 0) {
 			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
@@ -745,9 +743,7 @@ static void read_handler(ngx_event_t *rev)
 						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 							peer->default_ticket_key = key;
 
-#ifdef SSL_OP_NO_TICKET
 							SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
-#endif /* SSL_OP_NO_TICKET */
 							break;
 						}
 					}
@@ -755,9 +751,7 @@ static void read_handler(ngx_event_t *rev)
 					if (!peer->default_ticket_key) {
 						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key, session ticket support disabled");
 
-#ifdef SSL_OP_NO_TICKET
 						SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
-#endif /* SSL_OP_NO_TICKET */
 					}
 
 					break;
@@ -943,12 +937,6 @@ static void write_handler(ngx_event_t *wev)
 	}
 }
 
-#ifdef OPENSSL_NO_SHA256
-#	define ngx_ssl_session_ticket_md EVP_sha1
-#else
-#	define ngx_ssl_session_ticket_md EVP_sha256
-#endif
-
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
 {
 	SSL_CTX *ssl_ctx;
@@ -981,7 +969,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 		RAND_bytes(iv, 16);
 		EVP_EncryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
-		HMAC_Init_ex(hctx, key->key.hmac_key, 16, ngx_ssl_session_ticket_md(), NULL);
+		HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL);
 		ngx_memcpy(name, key->key.name, SSL_TICKET_KEY_NAME_LEN);
 
 		return 0;
@@ -1009,7 +997,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			(key == peer->default_ticket_key) ? " (default)" : "");
 
-		HMAC_Init_ex(hctx, key->key.hmac_key, 16, ngx_ssl_session_ticket_md(), NULL);
+		HMAC_Init_ex(hctx, key->key.hmac_key, 16, EVP_sha256(), NULL);
 		EVP_DecryptInit_ex(ectx, EVP_aes_128_cbc(), NULL, key->key.aes_key, iv);
 
 		if (key->was_default) {
