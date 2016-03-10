@@ -233,6 +233,10 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	}
 
 	if (conf->serf_address.len) {
+		if (ngx_strcmp(conf->serf_address.data, "off") == 0) {
+			return NGX_CONF_OK;
+		}
+
 		if (!ssl->session_tickets) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_tickets being enabled");
 			return NGX_CONF_ERROR;
@@ -246,10 +250,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		if (ssl->builtin_session_cache != NGX_SSL_NONE_SCACHE) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_cache being unset (none)");
 			return NGX_CONF_ERROR;
-		}
-
-		if (ngx_strcmp(conf->serf_address.data, "off") == 0) {
-			return NGX_CONF_OK;
 		}
 
 		if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
