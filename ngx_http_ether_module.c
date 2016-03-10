@@ -10,12 +10,6 @@
 
 #define SUBSCRIBE_EVENTS "user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT
 
-typedef enum {
-	INSTALL_KEY = 1,
-	REMOVE_KEY,
-	SET_DEFAULT_KEY
-} event_type_et;
-
 typedef struct {
 	ngx_str_t serf_address;
 	ngx_str_t serf_auth;
@@ -47,7 +41,8 @@ typedef struct {
 
 	state_et state;
 
-	uint64_t expected_seq;
+	uint64_t handshake_seq;
+	uint64_t auth_seq;
 	uint64_t ev_seq;
 
 	ngx_buf_t send;
@@ -392,17 +387,19 @@ static void read_handler(ngx_event_t *rev)
 	uint32_t i;
 	msgpack_object_str *str;
 	uint64_t seq = 0;
-	event_type_et type = 0;
+	msgpack_object_str event_name;
 	msgpack_object_bin payload;
 	msgpack_object_kv* ptr;
 	void *hdr_start;
 	u_char *new_buf;
 	key_st *key;
 	ngx_queue_t *q;
-	int have_key = 0, is_user_ev = 0;
+	int is_user_ev = 0;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
+
+	memset(&payload, 0, sizeof(msgpack_object_bin));
 
 	c = rev->data;
 	peer = c->data;
@@ -464,18 +461,16 @@ static void read_handler(ngx_event_t *rev)
 		case NGX_OK:
 			break;
 		case NGX_AGAIN:
+			goto cleanup;
 		case NGX_ERROR:
-			msgpack_unpacked_destroy(&und);
-			return;
+			goto done;
 		case NGX_ABORT:
 			exit(2); // something else?
 	}
 
 	if (und.data.type != MSGPACK_OBJECT_MAP) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expected a map");
-
-		msgpack_unpacked_destroy(&und);
-		return;
+		goto done;
 	}
 
 	for (i = 0; i < und.data.via.map.size; i++) {
@@ -483,9 +478,7 @@ static void read_handler(ngx_event_t *rev)
 
 		if (ptr->key.type != MSGPACK_OBJECT_STR) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect key to be string");
-
-			msgpack_unpacked_destroy(&und);
-			return;
+			goto done;
 		}
 
 		str = &ptr->key.via.str;
@@ -493,37 +486,23 @@ static void read_handler(ngx_event_t *rev)
 		if (ngx_strncmp(str->ptr, "Seq", str->size) == 0) {
 			if (ptr->val.type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect seq value to be positive integer");
-
-				msgpack_unpacked_destroy(&und);
-				return;
+				goto done;
 			}
 
 			seq = ptr->val.via.u64;
-
-			if (peer->expected_seq && seq != peer->expected_seq) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC message");
-
-				msgpack_unpacked_destroy(&und);
-				return;
-			}
-
 			continue;
 		}
 
 		if (ngx_strncmp(str->ptr, "Error", str->size) == 0) {
 			if (ptr->val.type != MSGPACK_OBJECT_STR) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, expect error value to be string");
-
-				msgpack_unpacked_destroy(&und);
-				return;
+				goto done;
 			}
 
 			str = &ptr->val.via.str;
 			if (str->size) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ether RPC error: %*s", str->size, str->ptr);
-
-				msgpack_unpacked_destroy(&und);
-				return;
+				goto done;
 			}
 
 			continue;
@@ -532,273 +511,259 @@ static void read_handler(ngx_event_t *rev)
 
 	if (!seq) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, missing sequence number");
-
-		msgpack_unpacked_destroy(&und);
-		return;
+		goto done;
 	}
 
-	switch (peer->state) {
-		case WAITING:
-			peer->expected_seq = 0;
+	if (peer->handshake_seq && seq == peer->handshake_seq) {
+		if (peer->state != HANDSHAKING) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC handshake response");
+			goto done;
+		}
 
-			if (seq != peer->ev_seq) {
+		if (peer->auth.len) {
+			peer->state = AUTHENTICATING;
+		} else {
+			peer->state = SUBSCRIBING;
+		}
+
+		c->write->handler = write_handler;
+	} else if (peer->auth_seq && seq == peer->auth_seq) {
+		if (peer->state != AUTHENTICATING) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC auth response");
+			goto done;
+		}
+
+		peer->state = SUBSCRIBING;
+
+		c->write->handler = write_handler;
+	} else if (peer->ev_seq && seq == peer->ev_seq) {
+		if (peer->state == SUBSCRIBING) {
+			peer->state = WAITING;
+			goto done;
+		}
+
+		if (peer->state != WAITING) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
+			goto done;
+		}
+
+		switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
+			case NGX_OK:
 				break;
+			case NGX_AGAIN:
+				peer->recv.pos = hdr_start;
+				goto cleanup;
+			case NGX_ERROR:
+				goto done;
+			case NGX_ABORT:
+				exit(2); // something else?
+		}
+
+		if (und.data.type != MSGPACK_OBJECT_MAP) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expected a map");
+			goto done;
+		}
+
+		for (i = 0; i < und.data.via.map.size; i++) {
+			ptr = &und.data.via.map.ptr[i];
+
+			if (ptr->key.type != MSGPACK_OBJECT_STR) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+				goto done;
 			}
 
-			switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
-				case NGX_OK:
-					break;
-				case NGX_AGAIN:
-					peer->recv.pos = hdr_start;
-				case NGX_ERROR:
-					msgpack_unpacked_destroy(&und);
-					return;
-				case NGX_ABORT:
-					exit(2); // something else?
-			}
+			str = &ptr->key.via.str;
 
-			if (und.data.type != MSGPACK_OBJECT_MAP) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expected a map");
-
-				msgpack_unpacked_destroy(&und);
-				return;
-			}
-
-			memset(&payload, 0, sizeof(msgpack_object_bin));
-
-			for (i = 0; i < und.data.via.map.size; i++) {
-				ptr = &und.data.via.map.ptr[i];
-
-				if (ptr->key.type != MSGPACK_OBJECT_STR) {
+			if (ngx_strncmp(str->ptr, "Event", str->size) == 0) {
+				if (ptr->val.type != MSGPACK_OBJECT_STR) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
-
-					msgpack_unpacked_destroy(&und);
-					return;
+					goto done;
 				}
 
-				str = &ptr->key.via.str;
-
-				if (ngx_strncmp(str->ptr, "Event", str->size) == 0) {
-					if (ptr->val.type != MSGPACK_OBJECT_STR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
-
-						msgpack_unpacked_destroy(&und);
-						return;
-					}
-
-					str = &ptr->val.via.str;
-
-					if (ngx_strncmp(str->ptr, "user", str->size) == 0) {
-						is_user_ev = 1;
-						continue;
-					}
-
-					// only interested in user events for now
-					break;
+				str = &ptr->val.via.str;
+				if (ngx_strncmp(str->ptr, "user", str->size) == 0) {
+					is_user_ev = 1;
 				}
 
-				if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
-					if (ptr->val.type != MSGPACK_OBJECT_STR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
-
-						msgpack_unpacked_destroy(&und);
-						return;
-					}
-
-					str = &ptr->val.via.str;
-
-					if (ngx_strncmp(str->ptr, INSTALL_KEY_EVENT, str->size) == 0) {
-						type = INSTALL_KEY;
-					} else if (ngx_strncmp(str->ptr, REMOVE_KEY_EVENT, str->size) == 0) {
-						type = REMOVE_KEY;
-					} else if (ngx_strncmp(str->ptr, SET_DEFAULT_KEY_EVENT, str->size) == 0) {
-						type = SET_DEFAULT_KEY;
-					} else {
-						// event not subscribed to
-						break;
-					}
-
-					continue;
-				}
-
-				if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
-					if (ptr->val.type != MSGPACK_OBJECT_BIN && ptr->val.type != MSGPACK_OBJECT_STR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect payload to be byte string");
-
-						msgpack_unpacked_destroy(&und);
-						return;
-					}
-
-					payload.size = ptr->val.via.bin.size;
-					payload.ptr = ptr->val.via.bin.ptr;
-					continue;
-				}
-
-				/*
-				 * ignored key value pairs:
-				 * 	- LTime: positive integer
-				 * 	- Coalesce: boolean
-				 */
+				continue;
 			}
 
-			if (!is_user_ev || !type) {
-				break;
+			if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
+				if (ptr->val.type != MSGPACK_OBJECT_STR) {
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect key to be string");
+					goto done;
+				}
+
+				event_name.size = ptr->val.via.str.size;
+				event_name.ptr = ptr->val.via.str.ptr;
+				continue;
+
+				/*if (ngx_strncmp(str->ptr, INSTALL_KEY_EVENT, str->size) == 0) {
+					type = INSTALL_KEY;
+				} else if (ngx_strncmp(str->ptr, REMOVE_KEY_EVENT, str->size) == 0) {
+					type = REMOVE_KEY;
+				} else if (ngx_strncmp(str->ptr, SET_DEFAULT_KEY_EVENT, str->size) == 0) {
+					type = SET_DEFAULT_KEY;
+				} else {
+					// event not subscribed to
+					break;
+				}
+
+				continue;*/
 			}
 
-			switch (type) {
-				case INSTALL_KEY:
-					if (payload.size != SSL_TICKET_KEY_NAME_LEN + 32) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
-						break;
-					}
+			if (ngx_strncmp(str->ptr, "Payload", str->size) == 0) {
+				if (ptr->val.type != MSGPACK_OBJECT_BIN && ptr->val.type != MSGPACK_OBJECT_STR) {
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response body, expect payload to be byte string");
+					goto done;
+				}
 
-					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-						"ssl session ticket key install: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
-
-					if (!ngx_queue_empty(&peer->ticket_keys)) {
-						for (q = ngx_queue_head(&peer->ticket_keys);
-							q != ngx_queue_sentinel(&peer->ticket_keys);
-							q = ngx_queue_next(q)) {
-							key = ngx_queue_data(q, key_st, queue);
-
-							if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-								have_key = 1;
-								break;
-							}
-						}
-
-						if (have_key) {
-							ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: already have key");
-							break;
-						}
-					}
-
-					key = ngx_pcalloc(c->pool, sizeof(key_st)); // is this the right pool?
-					if (!key) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
-						break;
-					}
-
-					memcpy(key->key.name, payload.ptr, SSL_TICKET_KEY_NAME_LEN);
-					memcpy(key->key.aes_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
-					memcpy(key->key.hmac_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
-
-					ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
-					break;
-				case REMOVE_KEY:
-					if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
-						break;
-					}
-
-					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-						"ssl session ticket key removal: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
-
-					if (ngx_queue_empty(&peer->ticket_keys)) {
-						break;
-					}
-
-					for (q = ngx_queue_head(&peer->ticket_keys);
-						q != ngx_queue_sentinel(&peer->ticket_keys);
-						q = ngx_queue_next(q)) {
-						key = ngx_queue_data(q, key_st, queue);
-
-						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-							ngx_queue_remove(q);
-
-							ngx_memzero(&key->key, sizeof(key->key));
-							ngx_pfree(c->pool, key); // is this the right pool?
-							break;
-						}
-					}
-
-					break;
-				case SET_DEFAULT_KEY:
-					if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
-						break;
-					}
-
-					ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-						"ssl session ticket key set default: \"%*s\"",
-						ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
-
-					if (ngx_queue_empty(&peer->ticket_keys)) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: without any keys");
-						break;
-					}
-
-					if (peer->default_ticket_key) {
-						peer->default_ticket_key->was_default = 1;
-						peer->default_ticket_key = NULL;
-					}
-
-					for (q = ngx_queue_head(&peer->ticket_keys);
-						q != ngx_queue_sentinel(&peer->ticket_keys);
-						q = ngx_queue_next(q)) {
-						key = ngx_queue_data(q, key_st, queue);
-
-						if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-							peer->default_ticket_key = key;
-
-							SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
-							break;
-						}
-					}
-
-					if (!peer->default_ticket_key) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key, session ticket support disabled");
-
-						SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
-					}
-
-					break;
+				payload.size = ptr->val.via.bin.size;
+				payload.ptr = ptr->val.via.bin.ptr;
+				continue;
 			}
 
-#if NGX_DEBUG
-			{
-			size_t num = 0;
+			/*
+			 * ignored key value pairs:
+			 * 	- LTime: positive integer
+			 * 	- Coalesce: boolean
+			 */
+		}
+
+		if (!is_user_ev) {
+			// only interested in user events for now
+			goto done;
+		}
+
+		if (ngx_strncmp(event_name.ptr, INSTALL_KEY_EVENT, event_name.size) == 0) {
+			if (payload.size != SSL_TICKET_KEY_NAME_LEN + 32) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
+				goto done;
+			}
+
+			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+				"ssl session ticket key install: \"%*s\"",
+				ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+			if (!ngx_queue_empty(&peer->ticket_keys)) {
+				for (q = ngx_queue_head(&peer->ticket_keys);
+					q != ngx_queue_sentinel(&peer->ticket_keys);
+					q = ngx_queue_next(q)) {
+					key = ngx_queue_data(q, key_st, queue);
+
+					if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, INSTALL_KEY_EVENT " event: already have key");
+						goto done;
+					}
+				}
+			}
+
+			key = ngx_pcalloc(c->pool, sizeof(key_st)); // is this the right pool?
+			if (!key) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
+				goto done;
+			}
+
+			memcpy(key->key.name, payload.ptr, SSL_TICKET_KEY_NAME_LEN);
+			memcpy(key->key.aes_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
+			memcpy(key->key.hmac_key, payload.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+
+			ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
+		} else if (ngx_strncmp(event_name.ptr, REMOVE_KEY_EVENT, event_name.size) == 0) {
+			if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
+				goto done;
+			}
+
+			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+				"ssl session ticket key removal: \"%*s\"",
+				ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+			if (ngx_queue_empty(&peer->ticket_keys)) {
+				goto done;
+			}
+
 			for (q = ngx_queue_head(&peer->ticket_keys);
 				q != ngx_queue_sentinel(&peer->ticket_keys);
 				q = ngx_queue_next(q)) {
-				num++;
+				key = ngx_queue_data(q, key_st, queue);
+
+				if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+					ngx_queue_remove(q);
+
+					ngx_memzero(&key->key, sizeof(key->key));
+					ngx_pfree(c->pool, key); // is this the right pool?
+					break;
+				}
+			}
+		} else if (ngx_strncmp(event_name.ptr, SET_DEFAULT_KEY_EVENT, event_name.size) == 0) {
+			if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
+				goto done;
 			}
 
-			ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
+			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+				"ssl session ticket key set default: \"%*s\"",
+				ngx_hex_dump(buf, (u_char *)payload.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+			if (ngx_queue_empty(&peer->ticket_keys)) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: without any keys");
+				goto done;
 			}
+
+			if (peer->default_ticket_key) {
+				peer->default_ticket_key->was_default = 1;
+				peer->default_ticket_key = NULL;
+			}
+
+			for (q = ngx_queue_head(&peer->ticket_keys);
+				q != ngx_queue_sentinel(&peer->ticket_keys);
+				q = ngx_queue_next(q)) {
+				key = ngx_queue_data(q, key_st, queue);
+
+				if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+					peer->default_ticket_key = key;
+
+					SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+					break;
+				}
+			}
+
+			if (!peer->default_ticket_key) {
+				SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key, session ticket support disabled");
+				goto done;
+			}
+		} else {
+			// event not subscribed to
+			goto done;
+		}
+
+#if NGX_DEBUG
+		{
+		size_t num = 0;
+		for (q = ngx_queue_head(&peer->ticket_keys);
+			q != ngx_queue_sentinel(&peer->ticket_keys);
+			q = ngx_queue_next(q)) {
+			num++;
+		}
+
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
+		}
 #endif
-
-			ngx_memzero((char *)payload.ptr, payload.size);
-			break;
-		case HANDSHAKING:
-			if (peer->auth.len) {
-				peer->state = AUTHENTICATING;
-			} else {
-				peer->state = SUBSCRIBING;
-			}
-
-			peer->expected_seq = 0;
-
-			c->write->handler = write_handler;
-			break;
-		case AUTHENTICATING:
-			peer->state = SUBSCRIBING;
-
-			peer->expected_seq = 0;
-
-			c->write->handler = write_handler;
-			break;
-		case SUBSCRIBING:
-			peer->state = WAITING;
-
-			peer->expected_seq = 0;
-			break;
+	} else {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number");
 	}
 
+done:
 	peer->recv.pos = peer->recv.start;
 	peer->recv.last = peer->recv.start;
+
+cleanup:
+	if (payload.size) {
+		ngx_memzero((char *)payload.ptr, payload.size);
+	}
 
 	msgpack_unpacked_destroy(&und);
 }
@@ -810,6 +775,7 @@ static void write_handler(ngx_event_t *wev)
 	ssize_t size;
 	msgpack_sbuffer *sbuf;
 	msgpack_packer *pk;
+	uint64_t seq;
 
 	c = wev->data;
 	peer = c->data;
@@ -818,7 +784,7 @@ static void write_handler(ngx_event_t *wev)
 	pk = &peer->pk;
 
 	if (!peer->send.start) {
-		if (RAND_bytes((uint8_t *)&peer->expected_seq, sizeof(peer->expected_seq)) != 1) {
+		if (RAND_bytes((uint8_t *)&seq, sizeof(uint64_t)) != 1) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "RAND_bytes failed");
 			return;
 		}
@@ -831,6 +797,8 @@ static void write_handler(ngx_event_t *wev)
 				// should never happen
 				return;
 			case HANDSHAKING:
+				peer->handshake_seq = seq;
+
 				// {"Command": "handshake", "Seq": 0}
 				// {"Version": 1}
 
@@ -844,7 +812,7 @@ static void write_handler(ngx_event_t *wev)
 
 				msgpack_pack_str(pk, sizeof("Seq") - 1);
 				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
-				msgpack_pack_uint64(pk, peer->expected_seq);
+				msgpack_pack_uint64(pk, seq);
 
 				// body
 				msgpack_pack_map(pk, 1);
@@ -854,6 +822,8 @@ static void write_handler(ngx_event_t *wev)
 				msgpack_pack_int32(pk, 1);
 				break;
 			case AUTHENTICATING:
+				peer->auth_seq = seq;
+
 				// {"Command": "auth", "Seq": 0}
 				// {"AuthKey": "my-secret-auth-token"}
 
@@ -867,7 +837,7 @@ static void write_handler(ngx_event_t *wev)
 
 				msgpack_pack_str(pk, sizeof("Seq") - 1);
 				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
-				msgpack_pack_uint64(pk, peer->expected_seq);
+				msgpack_pack_uint64(pk, seq);
 
 				// body
 				msgpack_pack_map(pk, 1);
@@ -878,7 +848,7 @@ static void write_handler(ngx_event_t *wev)
 				msgpack_pack_str_body(pk, peer->auth.data, peer->auth.len);
 				break;
 			case SUBSCRIBING:
-				peer->ev_seq = peer->expected_seq;
+				peer->ev_seq = seq;
 
 				// {"Command": "stream", "Seq": 0}
 				// {"Type": "member-join,user:deploy"}`
@@ -893,7 +863,7 @@ static void write_handler(ngx_event_t *wev)
 
 				msgpack_pack_str(pk, sizeof("Seq") - 1);
 				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
-				msgpack_pack_uint64(pk, peer->expected_seq);
+				msgpack_pack_uint64(pk, seq);
 
 				// body
 				msgpack_pack_map(pk, 1);
