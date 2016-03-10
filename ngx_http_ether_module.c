@@ -32,24 +32,29 @@ typedef struct {
 } key_st;
 
 typedef struct {
-	ngx_peer_connection_t pc;
+	struct {
+		ngx_peer_connection_t pc;
 
-	ngx_str_t auth;
+		ngx_buf_t send;
+		ngx_buf_t recv;
+
+		ngx_str_t auth;
+
+		state_et state;
+
+		struct {
+			uint64_t handshake;
+			uint64_t auth;
+			uint64_t stream;
+		} seq;
+
+		msgpack_sbuffer sbuf;
+		msgpack_packer pk;
+	} serf;
+
 	ngx_msec_t timeout;
 
 	ngx_http_ssl_srv_conf_t *ssl;
-
-	state_et state;
-
-	uint64_t handshake_seq;
-	uint64_t auth_seq;
-	uint64_t ev_seq;
-
-	ngx_buf_t send;
-	ngx_buf_t recv;
-
-	msgpack_sbuffer sbuf; // replace with custom buffer
-	msgpack_packer pk;
 
 	ngx_queue_t ticket_keys;
 	key_st *default_ticket_key;
@@ -61,8 +66,8 @@ static void exit_process(ngx_cycle_t *cycle);
 static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
-static void read_handler(ngx_event_t *rev);
-static void write_handler(ngx_event_t *wev);
+static void serf_read_handler(ngx_event_t *rev);
+static void serf_write_handler(ngx_event_t *wev);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
 
@@ -137,10 +142,11 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 	ngx_peer_connection_t *pc;
 	size_t i;
 	ngx_int_t rc;
+	ngx_event_t *rev, *wev;
 
 	peer = peers.elts;
 	for (i = 0; i < peers.nelts; i++) {
-		pc = &peer[i].pc;
+		pc = &peer[i].serf.pc;
 
 		rc = ngx_event_connect_peer(pc);
 		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
@@ -151,13 +157,16 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		c = pc->connection;
 		c->data = &peer[i];
 
+		rev = c->read;
+		wev = c->write;
+
 		c->log = cycle->log;
-		c->read->log = c->log;
-		c->write->log = c->log;
+		rev->log = c->log;
+		wev->log = c->log;
 		c->pool = cycle->pool;
 
-		c->write->handler = write_handler;
-		c->read->handler = read_handler;
+		rev->handler = serf_read_handler;
+		wev->handler = serf_write_handler;
 
 		if (peer[i].timeout) {
 			// set timeout
@@ -181,9 +190,9 @@ static void exit_process(ngx_cycle_t *cycle)
 
 	peer = peers.elts;
 	for (i = 0; i < peers.nelts; i++) {
-		pc = &peer[i].pc;
-		c = pc->connection;
+		pc = &peer[i].serf.pc;
 
+		c = pc->connection;
 		if (c) {
 			ngx_close_connection(c);
 			pc->connection = NULL;
@@ -282,8 +291,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 		ngx_memzero(peer, sizeof(peer_st));
 
-		peer->auth.data = conf->serf_auth.data;
-		peer->auth.len = conf->serf_auth.len;
+		peer->serf.auth.data = conf->serf_auth.data;
+		peer->serf.auth.len = conf->serf_auth.len;
 
 		if (conf->timeout != NGX_CONF_UNSET_MSEC) {
 			peer->timeout = conf->timeout;
@@ -293,7 +302,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 		ngx_queue_init(&peer->ticket_keys);
 
-		pc = &peer->pc;
+		pc = &peer->serf.pc;
 
 		pc->sockaddr = u.addrs[0].sockaddr;
 		pc->socklen = u.addrs[0].socklen;
@@ -303,7 +312,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		pc->log = cf->log;
 		pc->log_error = NGX_ERROR_ERR;
 
-		peer->state = HANDSHAKING;
+		peer->serf.state = HANDSHAKING;
 
 		if (g_ssl_ctx_exdata_peer_index == -1) {
 			g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -382,7 +391,7 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 
 static void dummy_write_handler(ngx_event_t *wev) { }
 
-static void read_handler(ngx_event_t *rev)
+static void serf_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
 	peer_st *peer;
@@ -406,25 +415,25 @@ static void read_handler(ngx_event_t *rev)
 	c = rev->data;
 	peer = c->data;
 
-	if (!peer->recv.start) {
+	if (!peer->serf.recv.start) {
 		/* 1/2 of the page_size, is it enough? */
-		peer->recv.start = ngx_palloc(c->pool, ngx_pagesize / 2);
-		if (!peer->recv.start) {
+		peer->serf.recv.start = ngx_palloc(c->pool, ngx_pagesize / 2);
+		if (!peer->serf.recv.start) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated recv buffer");
 			return;
 		}
 
-		peer->recv.pos = peer->recv.start;
-		peer->recv.last = peer->recv.start;
-		peer->recv.end = peer->recv.start + ngx_pagesize / 2;
+		peer->serf.recv.pos = peer->serf.recv.start;
+		peer->serf.recv.last = peer->serf.recv.start;
+		peer->serf.recv.end = peer->serf.recv.start + ngx_pagesize / 2;
 	}
 
 	while (1) {
-		n = peer->recv.end - peer->recv.last;
+		n = peer->serf.recv.end - peer->serf.recv.last;
 
 		/* buffer not big enough? enlarge it by twice */
 		if (n == 0) {
-			size = peer->recv.end - peer->recv.start;
+			size = peer->serf.recv.end - peer->serf.recv.start;
 
 			new_buf = ngx_palloc(c->pool, size * 2);
 			if (!new_buf) {
@@ -432,20 +441,20 @@ static void read_handler(ngx_event_t *rev)
 				return;
 			}
 
-			ngx_memcpy(new_buf, peer->recv.start, size);
+			ngx_memcpy(new_buf, peer->serf.recv.start, size);
 
-			peer->recv.start = new_buf;
-			peer->recv.pos = new_buf;
-			peer->recv.last = new_buf + size;
-			peer->recv.end = new_buf + size * 2;
+			peer->serf.recv.start = new_buf;
+			peer->serf.recv.pos = new_buf;
+			peer->serf.recv.last = new_buf + size;
+			peer->serf.recv.end = new_buf + size * 2;
 
-			n = peer->recv.end - peer->recv.last;
+			n = peer->serf.recv.end - peer->serf.recv.last;
 		}
 
-		size = c->recv(c, peer->recv.last, n);
+		size = c->recv(c, peer->serf.recv.last, n);
 
 		if (size > 0) {
-			peer->recv.last += size;
+			peer->serf.recv.last += size;
 			continue;
 		} else if (size == 0 || size == NGX_AGAIN) {
 			break;
@@ -457,9 +466,9 @@ static void read_handler(ngx_event_t *rev)
 
 	msgpack_unpacked_init(&und);
 
-	hdr_start = peer->recv.pos;
+	hdr_start = peer->serf.recv.pos;
 
-	switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
+	switch (ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
 		case NGX_OK:
 			break;
 		case NGX_AGAIN:
@@ -512,44 +521,44 @@ static void read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
-	if (peer->handshake_seq && seq == peer->handshake_seq) {
-		if (peer->state != HANDSHAKING) {
+	if (peer->serf.seq.handshake && seq == peer->serf.seq.handshake) {
+		if (peer->serf.state != HANDSHAKING) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC handshake response");
 			goto done;
 		}
 
-		if (peer->auth.len) {
-			peer->state = AUTHENTICATING;
+		if (peer->serf.auth.len) {
+			peer->serf.state = AUTHENTICATING;
 		} else {
-			peer->state = SUBSCRIBING;
+			peer->serf.state = SUBSCRIBING;
 		}
 
-		c->write->handler = write_handler;
-	} else if (peer->auth_seq && seq == peer->auth_seq) {
-		if (peer->state != AUTHENTICATING) {
+		c->write->handler = serf_write_handler;
+	} else if (peer->serf.seq.auth && seq == peer->serf.seq.auth) {
+		if (peer->serf.state != AUTHENTICATING) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC auth response");
 			goto done;
 		}
 
-		peer->state = SUBSCRIBING;
+		peer->serf.state = SUBSCRIBING;
 
-		c->write->handler = write_handler;
-	} else if (peer->ev_seq && seq == peer->ev_seq) {
-		if (peer->state == SUBSCRIBING) {
-			peer->state = WAITING;
+		c->write->handler = serf_write_handler;
+	} else if (peer->serf.seq.stream && seq == peer->serf.seq.stream) {
+		if (peer->serf.state == SUBSCRIBING) {
+			peer->serf.state = WAITING;
 			goto done;
 		}
 
-		if (peer->state != WAITING) {
+		if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
 			goto done;
 		}
 
-		switch (ether_msgpack_parse(&und, &peer->recv, size, c->log)) {
+		switch (ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
 			case NGX_OK:
 				break;
 			case NGX_AGAIN:
-				peer->recv.pos = hdr_start;
+				peer->serf.recv.pos = hdr_start;
 				goto cleanup;
 			case NGX_ERROR:
 				goto done;
@@ -741,8 +750,8 @@ static void read_handler(ngx_event_t *rev)
 	}
 
 done:
-	peer->recv.pos = peer->recv.start;
-	peer->recv.last = peer->recv.start;
+	peer->serf.recv.pos = peer->serf.recv.start;
+	peer->serf.recv.last = peer->serf.recv.start;
 
 cleanup:
 	if (payload.size) {
@@ -752,7 +761,7 @@ cleanup:
 	msgpack_unpacked_destroy(&und);
 }
 
-static void write_handler(ngx_event_t *wev)
+static void serf_write_handler(ngx_event_t *wev)
 {
 	ngx_connection_t *c;
 	peer_st *peer;
@@ -764,10 +773,10 @@ static void write_handler(ngx_event_t *wev)
 	c = wev->data;
 	peer = c->data;
 
-	sbuf = &peer->sbuf;
-	pk = &peer->pk;
+	sbuf = &peer->serf.sbuf;
+	pk = &peer->serf.pk;
 
-	if (!peer->send.start) {
+	if (!peer->serf.send.start) {
 		if (RAND_bytes((uint8_t *)&seq, sizeof(uint64_t)) != 1) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "RAND_bytes failed");
 			return;
@@ -776,12 +785,12 @@ static void write_handler(ngx_event_t *wev)
 		msgpack_sbuffer_init(sbuf);
 		msgpack_packer_init(pk, sbuf, msgpack_sbuffer_write);
 
-		switch (peer->state) {
+		switch (peer->serf.state) {
 			case WAITING:
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "write_handler called in WAITING state");
 				return;
 			case HANDSHAKING:
-				peer->handshake_seq = seq;
+				peer->serf.seq.handshake = seq;
 
 				// {"Command": "handshake", "Seq": 0}
 				// {"Version": 1}
@@ -806,7 +815,7 @@ static void write_handler(ngx_event_t *wev)
 				msgpack_pack_int32(pk, 1);
 				break;
 			case AUTHENTICATING:
-				peer->auth_seq = seq;
+				peer->serf.seq.auth = seq;
 
 				// {"Command": "auth", "Seq": 0}
 				// {"AuthKey": "my-secret-auth-token"}
@@ -828,11 +837,11 @@ static void write_handler(ngx_event_t *wev)
 
 				msgpack_pack_str(pk, sizeof("AuthKey") - 1);
 				msgpack_pack_str_body(pk, "AuthKey", sizeof("AuthKey") - 1);
-				msgpack_pack_str(pk, peer->auth.len);
-				msgpack_pack_str_body(pk, peer->auth.data, peer->auth.len);
+				msgpack_pack_str(pk, peer->serf.auth.len);
+				msgpack_pack_str_body(pk, peer->serf.auth.data, peer->serf.auth.len);
 				break;
 			case SUBSCRIBING:
-				peer->ev_seq = seq;
+				peer->serf.seq.stream = seq;
 
 				// {"Command": "stream", "Seq": 0}
 				// {"Type": "member-join,user:deploy"}`
@@ -859,16 +868,16 @@ static void write_handler(ngx_event_t *wev)
 				break;
 		}
 
-		peer->send.start = (u_char *)sbuf->data;
-		peer->send.pos = (u_char *)sbuf->data;
-		peer->send.last = (u_char *)sbuf->data + sbuf->size;
-		peer->recv.end = (u_char *)sbuf->data + sbuf->alloc;
+		peer->serf.send.start = (u_char *)sbuf->data;
+		peer->serf.send.pos = (u_char *)sbuf->data;
+		peer->serf.send.last = (u_char *)sbuf->data + sbuf->size;
+		peer->serf.send.end = (u_char *)sbuf->data + sbuf->alloc;
 	}
 
-	while (peer->send.pos < peer->send.last) {
-		size = c->send(c, peer->send.pos, peer->send.last - peer->send.pos);
+	while (peer->serf.send.pos < peer->serf.send.last) {
+		size = c->send(c, peer->serf.send.pos, peer->serf.send.last - peer->serf.send.pos);
 		if (size > 0) {
-			peer->send.pos += size;
+			peer->serf.send.pos += size;
 		} else if (size == 0 || size == NGX_AGAIN) {
 			return;
 		} else {
@@ -877,13 +886,13 @@ static void write_handler(ngx_event_t *wev)
 		}
 	}
 
-	if (peer->send.pos == peer->send.last) {
+	if (peer->serf.send.pos == peer->serf.send.last) {
 		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ether send done");
 
-		peer->send.start = NULL;
-		peer->send.pos = NULL;
-		peer->send.last = NULL;
-		peer->recv.end = NULL;
+		peer->serf.send.start = NULL;
+		peer->serf.send.pos = NULL;
+		peer->serf.send.last = NULL;
+		peer->serf.send.end = NULL;
 
 		msgpack_sbuffer_destroy(sbuf);
 
