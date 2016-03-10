@@ -665,6 +665,15 @@ static void read_handler(ngx_event_t *rev)
 				key = ngx_queue_data(q, key_st, queue);
 
 				if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+					if (key == peer->default_ticket_key) {
+						peer->default_ticket_key->was_default = 1;
+						peer->default_ticket_key = NULL;
+
+						SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, REMOVE_KEY_EVENT " event: on default key, session ticket support disabled");
+					}
+
 					ngx_queue_remove(q);
 
 					ngx_memzero(&key->key, sizeof(key->key));
