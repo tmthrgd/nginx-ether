@@ -8,7 +8,7 @@
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
 
-#define SUBSCRIBE_EVENTS "user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT
+#define SUBSCRIBE_EVENTS ("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
 
 typedef struct {
 	ngx_str_t serf_address;
@@ -20,7 +20,7 @@ typedef enum {
 	WAITING = 0,
 	HANDSHAKING,
 	AUTHENTICATING,
-	SUBSCRIBING
+	STREAM_KEY_EVENTS
 } state_et;
 
 typedef struct {
@@ -45,7 +45,7 @@ typedef struct {
 		struct {
 			uint64_t handshake;
 			uint64_t auth;
-			uint64_t stream;
+			uint64_t key_ev;
 		} seq;
 
 		msgpack_sbuffer sbuf;
@@ -407,7 +407,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	u_char *new_buf;
 	key_st *key;
 	ngx_queue_t *q;
-	int is_user_ev = 0;
+	int is_valid_ev = 0;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -522,6 +522,8 @@ static void serf_read_handler(ngx_event_t *rev)
 	}
 
 	if (peer->serf.seq.handshake && seq == peer->serf.seq.handshake) {
+		// {"Seq": 0, "Error": ""}
+
 		if (peer->serf.state != HANDSHAKING) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC handshake response");
 			goto done;
@@ -530,21 +532,32 @@ static void serf_read_handler(ngx_event_t *rev)
 		if (peer->serf.auth.len) {
 			peer->serf.state = AUTHENTICATING;
 		} else {
-			peer->serf.state = SUBSCRIBING;
+			peer->serf.state = STREAM_KEY_EVENTS;
 		}
 
 		c->write->handler = serf_write_handler;
 	} else if (peer->serf.seq.auth && seq == peer->serf.seq.auth) {
+		// {"Seq": 0, "Error": ""}
+
 		if (peer->serf.state != AUTHENTICATING) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC auth response");
 			goto done;
 		}
 
-		peer->serf.state = SUBSCRIBING;
+		peer->serf.state = STREAM_KEY_EVENTS;
 
 		c->write->handler = serf_write_handler;
-	} else if (peer->serf.seq.stream && seq == peer->serf.seq.stream) {
-		if (peer->serf.state == SUBSCRIBING) {
+	} else if (peer->serf.seq.key_ev && seq == peer->serf.seq.key_ev) {
+		// {"Seq": 0, "Error": ""}
+		// {
+		// 	"Event": "user",
+		// 	"LTime": 123,
+		// 	"Name": "deploy",
+		// 	"Payload": "9c45b87",
+		// 	"Coalesce": true,
+		// }
+
+		if (peer->serf.state == STREAM_KEY_EVENTS) {
 			peer->serf.state = WAITING;
 			goto done;
 		}
@@ -588,7 +601,7 @@ static void serf_read_handler(ngx_event_t *rev)
 
 				str = &ptr->val.via.str;
 				if (ngx_strncmp(str->ptr, "user", str->size) == 0) {
-					is_user_ev = 1;
+					is_valid_ev = 1;
 				}
 			} else if (ngx_strncmp(str->ptr, "Name", str->size) == 0) {
 				if (ptr->val.type != MSGPACK_OBJECT_STR) {
@@ -615,7 +628,7 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 		}
 
-		if (!is_user_ev) {
+		if (!is_valid_ev) {
 			goto done;
 		}
 
@@ -672,22 +685,23 @@ static void serf_read_handler(ngx_event_t *rev)
 				q = ngx_queue_next(q)) {
 				key = ngx_queue_data(q, key_st, queue);
 
-				if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-					if (key == peer->default_ticket_key) {
-						peer->default_ticket_key->was_default = 1;
-						peer->default_ticket_key = NULL;
-
-						SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
-
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, REMOVE_KEY_EVENT " event: on default key, session ticket support disabled");
-					}
-
-					ngx_queue_remove(q);
-
-					ngx_memzero(&key->key, sizeof(key->key));
-					ngx_pfree(c->pool, key); // is this the right pool?
-					break;
+				if (ngx_memcmp(payload.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) != 0) {
+					continue;
 				}
+
+				ngx_queue_remove(q);
+
+				if (key == peer->default_ticket_key) {
+					peer->default_ticket_key = NULL;
+
+					SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, REMOVE_KEY_EVENT " event: on default key, session ticket support disabled");
+				}
+
+				ngx_memzero(&key->key, sizeof(key->key));
+				ngx_pfree(c->pool, key); // is this the right pool?
+				break;
 			}
 		} else if (ngx_strncmp(event_name.ptr, SET_DEFAULT_KEY_EVENT, event_name.size) == 0) {
 			if (payload.size != SSL_TICKET_KEY_NAME_LEN) {
@@ -840,8 +854,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, peer->serf.auth.len);
 				msgpack_pack_str_body(pk, peer->serf.auth.data, peer->serf.auth.len);
 				break;
-			case SUBSCRIBING:
-				peer->serf.seq.stream = seq;
+			case STREAM_KEY_EVENTS:
+				peer->serf.seq.key_ev = seq;
 
 				// {"Command": "stream", "Seq": 0}
 				// {"Type": "member-join,user:deploy"}`
