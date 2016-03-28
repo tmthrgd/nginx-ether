@@ -722,6 +722,7 @@ static void serf_read_handler(ngx_event_t *rev)
 				key = ngx_queue_data(q, key_st, queue);
 
 				if (ngx_memcmp(payload.via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+					key->was_default = 0;
 					peer->default_ticket_key = key;
 
 					SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
