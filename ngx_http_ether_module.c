@@ -4,11 +4,31 @@
 
 #include <msgpack.h>
 
+#include "protocol_binary.h"
+
+#define MEMC_KEYS_ARE_HEX 0
+
 #define INSTALL_KEY_EVENT "install-key"
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
 
-#define SUBSCRIBE_EVENTS ("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
+#define STREAM_KEY_EVENTS ("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
+
+#define MEMC_SERVER_TAG_KEY "role"
+#define MEMC_SERVER_TAG_VAL "memc"
+
+#define MEMC_PORT_TAG_KEY "memc_port"
+
+#define MEMBER_JOIN_EVENT "member-join"
+#define MEMBER_LEAVE_EVENT "member-leave"
+#define MEMBER_FAILED_EVENT "member-failed"
+#define MEMBER_UPDATE_EVENT "member-update"
+
+#define STREAM_MEMBER_EVENTS (MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT)
+
+#define CHASH_NPOINTS 160
+
+typedef struct _peer_st peer_st;
 
 typedef struct {
 	ngx_str_t serf_address;
@@ -20,8 +40,15 @@ typedef enum {
 	WAITING = 0,
 	HANDSHAKING,
 	AUTHENTICATING,
-	STREAM_KEY_EVENTS
+	STREAM_KEY_EVSUB,
+	STREAM_MEMBER_EVSUB,
+	LISTING_MEMBERS
 } state_et;
+
+typedef struct {
+	uint32_t hash;
+	void *data;
+} chash_point_t;
 
 typedef struct {
 	ngx_ssl_session_ticket_key_t key;
@@ -32,6 +59,32 @@ typedef struct {
 } key_st;
 
 typedef struct {
+	union {
+		struct sockaddr addr;
+		struct sockaddr_in sin;
+		struct sockaddr_in6 sin6;
+	};
+	size_t addr_len;
+
+	ngx_str_t name;
+
+	ngx_queue_t queue;
+} memc_server_st;
+
+typedef struct {
+	protocol_binary_command cmd;
+
+	ngx_connection_t *c;
+
+	ngx_event_t *ev;
+
+	peer_st *peer;
+
+	ngx_buf_t send;
+	ngx_buf_t recv;
+} memc_op_st;
+
+typedef struct _peer_st {
 	struct {
 		ngx_peer_connection_t pc;
 
@@ -46,13 +99,25 @@ typedef struct {
 			uint64_t handshake;
 			uint64_t auth;
 			uint64_t key_ev;
+			uint64_t member_ev;
+			uint64_t list;
 		} seq;
 
 		msgpack_sbuffer sbuf;
 		msgpack_packer pk;
 	} serf;
 
+	struct {
+		//ngx_queue_t servers;
+
+		ngx_uint_t npoints;
+		chash_point_t *points;
+	} memc;
+
 	ngx_msec_t timeout;
+
+	ngx_pool_t *pool;
+	ngx_log_t *log;
 
 	ngx_http_ssl_srv_conf_t *ssl;
 
@@ -69,6 +134,18 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
 
+static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size, ngx_log_t *log);
+static char *ether_msgpack_parse_map(msgpack_object *obj, ...);
+
+static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uint32_t hash);
+
+static void memc_read_handler(ngx_event_t *rev);
+static void memc_write_handler(ngx_event_t *wev);
+
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, ngx_event_t *ev);
+static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value);
+
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
@@ -78,6 +155,7 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
 static ngx_array_t peers = {0};
 
 static int g_ssl_ctx_exdata_peer_index = -1;
+static int g_ssl_exdata_memc_op_index = -1;
 
 static ngx_command_t module_commands[] = {
 	{ ngx_string("ether"),
@@ -298,9 +376,17 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			peer->timeout = conf->timeout;
 		}
 
+		peer->pool = cf->cycle->pool;
+		peer->log = cf->cycle->log;
+
 		peer->ssl = ssl;
 
 		ngx_queue_init(&peer->ticket_keys);
+
+		peer->memc.points = ngx_palloc(cf->pool, sizeof(chash_point_t) * CHASH_NPOINTS);
+		if (!peer->memc.points) {
+			return NGX_CONF_ERROR;
+		}
 
 		pc = &peer->serf.pc;
 
@@ -318,6 +404,14 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 			if (g_ssl_ctx_exdata_peer_index == -1) {
 				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_get_ex_new_index failed");
+				return NGX_CONF_ERROR;
+			}
+		}
+
+		if (g_ssl_exdata_memc_op_index == -1) {
+			g_ssl_exdata_memc_op_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+			if (g_ssl_exdata_memc_op_index == -1) {
+				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_get_ex_new_index failed");
 				return NGX_CONF_ERROR;
 			}
 		}
@@ -457,12 +551,28 @@ static void serf_read_handler(ngx_event_t *rev)
 	peer_st *peer;
 	ssize_t size, n;
 	msgpack_unpacked und;
-	msgpack_object seq, error, event, name, payload = {0};
+	msgpack_object seq, error, event, name, payload = {0}, members, addr, tags, status;
+	msgpack_object_kv *ptr_kv;
+	msgpack_object_str *str;
 	void *hdr_start;
 	u_char *new_buf;
 	key_st *key;
 	ngx_queue_t *q;
 	char *err;
+	int skip_member;
+	memc_server_st *server = NULL;
+	unsigned char *s_addr;
+	int remove_member = 0, add_member = 0, update_member = 0;
+	size_t i, j;
+	uint32_t hash, base_hash;
+	union {
+		uint32_t value;
+		u_char byte[4];
+	} prev_hash;
+	ngx_int_t rc;
+	unsigned short port;
+	u_char str_addr[NGX_SOCKADDR_STRLEN];
+	u_char str_port[sizeof("65535") - 1];
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -553,7 +663,7 @@ static void serf_read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
-	if (peer->serf.seq.handshake && seq.via.u64 == peer->serf.seq.handshake) {
+	if (seq.via.u64 == peer->serf.seq.handshake) {
 		// {"Seq": 0, "Error": ""}
 
 		if (peer->serf.state != HANDSHAKING) {
@@ -564,11 +674,11 @@ static void serf_read_handler(ngx_event_t *rev)
 		if (peer->serf.auth.len) {
 			peer->serf.state = AUTHENTICATING;
 		} else {
-			peer->serf.state = STREAM_KEY_EVENTS;
+			peer->serf.state = STREAM_KEY_EVSUB;
 		}
 
 		c->write->handler = serf_write_handler;
-	} else if (peer->serf.seq.auth && seq.via.u64 == peer->serf.seq.auth) {
+	} else if (seq.via.u64 == peer->serf.seq.auth) {
 		// {"Seq": 0, "Error": ""}
 
 		if (peer->serf.state != AUTHENTICATING) {
@@ -576,10 +686,10 @@ static void serf_read_handler(ngx_event_t *rev)
 			goto done;
 		}
 
-		peer->serf.state = STREAM_KEY_EVENTS;
+		peer->serf.state = STREAM_KEY_EVSUB;
 
 		c->write->handler = serf_write_handler;
-	} else if (peer->serf.seq.key_ev && seq.via.u64 == peer->serf.seq.key_ev) {
+	} else if (seq.via.u64 == peer->serf.seq.key_ev) {
 		// {"Seq": 0, "Error": ""}
 		// {
 		// 	"Event": "user",
@@ -589,8 +699,10 @@ static void serf_read_handler(ngx_event_t *rev)
 		// 	"Coalesce": true,
 		// }
 
-		if (peer->serf.state == STREAM_KEY_EVENTS) {
-			peer->serf.state = WAITING;
+		if (peer->serf.state == STREAM_KEY_EVSUB) {
+			peer->serf.state = STREAM_MEMBER_EVSUB;
+
+			c->write->handler = serf_write_handler;
 			goto done;
 		}
 
@@ -753,6 +865,298 @@ static void serf_read_handler(ngx_event_t *rev)
 		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
 		}
 #endif
+	} else if (seq.via.u64 == peer->serf.seq.member_ev || seq.via.u64 == peer->serf.seq.list) {
+		// seq.via.u64 == peer->serf.seq.member_ev
+		//
+		// {"Seq": 0, "Error": ""}
+		// {
+		// 	"Event": "member-join",
+		// 	"Members": [
+		// 		{
+		// 			"Name": "TestNode"
+		// 			"Addr": [127, 0, 0, 1],
+		// 			"Port": 5000,
+		// 			"Tags": {
+		// 				"role": "test"
+		// 			},
+		// 			"Status": "alive",
+		// 			"ProtocolMin": 0,
+		// 			"ProtocolMax": 3,
+		// 			"ProtocolCur": 2,
+		// 			"DelegateMin": 0,
+		// 			"DelegateMax": 1,
+		// 			"DelegateCur": 1,
+		// 		},
+		// 		...
+		// 	]
+		// }
+
+		// seq.via.u64 == peer->serf.seq.list
+		//
+		// {"Seq": 0, "Error": ""}
+		// {
+		// 	"Members": [
+		// 		{
+		// 			"Name": "TestNode"
+		// 			"Addr": [127, 0, 0, 1],
+		// 			"Port": 5000,
+		// 			"Tags": {
+		// 				"role": "test"
+		// 			},
+		// 			"Status": "alive",
+		// 			"ProtocolMin": 0,
+		// 			"ProtocolMax": 3,
+		// 			"ProtocolCur": 2,
+		// 			"DelegateMin": 0,
+		// 			"DelegateMax": 1,
+		// 			"DelegateCur": 1,
+		// 		},
+		// 	...]
+		// }
+
+		if (seq.via.u64 == peer->serf.seq.member_ev && peer->serf.state == STREAM_MEMBER_EVSUB) {
+			peer->serf.state = LISTING_MEMBERS;
+
+			c->write->handler = serf_write_handler;
+			goto done;
+		}
+
+		if (seq.via.u64 == peer->serf.seq.list && peer->serf.state == LISTING_MEMBERS) {
+			peer->serf.state = WAITING;
+		}
+
+		if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
+			goto done;
+		}
+
+		switch (ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
+			case NGX_OK:
+				break;
+			case NGX_AGAIN:
+				peer->serf.recv.pos = hdr_start;
+				goto cleanup;
+			case NGX_ABORT:
+				exit(2); // something else?
+			default: /* NGX_ERROR */
+				goto done;
+		}
+
+		if (seq.via.u64 == peer->serf.seq.list) {
+			members.type = MSGPACK_OBJECT_ARRAY;
+
+			err = ether_msgpack_parse_map(&und.data, "Members", &members, NULL);
+			if (err) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+				goto done;
+			}
+
+			add_member = 1;
+		} else {
+			event.type = MSGPACK_OBJECT_STR;
+			members.type = MSGPACK_OBJECT_ARRAY;
+
+			err = ether_msgpack_parse_map(&und.data, "Event", &event, "Members", &members, NULL);
+			if (err) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+				goto done;
+			}
+
+			if (ngx_strncmp(event.via.str.ptr, MEMBER_JOIN_EVENT, event.via.str.size) == 0) {
+				add_member = 1;
+			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_LEAVE_EVENT, event.via.str.size) == 0
+				|| ngx_strncmp(event.via.str.ptr, MEMBER_FAILED_EVENT, event.via.str.size) == 0) {
+				remove_member = 1;
+			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_UPDATE_EVENT, event.via.str.size) == 0) {
+				update_member = 1;
+			} else {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", event.via.str.size, event.via.str.ptr);
+				goto done;
+			}
+		}
+
+		for (i = 0; i < members.via.array.size; i++) {
+			name.type = MSGPACK_OBJECT_STR;
+			addr.type = MSGPACK_OBJECT_BIN;
+			tags.type = MSGPACK_OBJECT_MAP;
+			status.type = MSGPACK_OBJECT_STR;
+
+			err = ether_msgpack_parse_map(&members.via.array.ptr[i],
+				"Name", &name,
+				"Addr", &addr,
+				"Port", NULL,
+				"Tags", &tags,
+				"Status", &status,
+				"ProtocolMin", NULL,
+				"ProtocolMax", NULL,
+				"ProtocolCur", NULL,
+				"DelegateMin", NULL,
+				"DelegateMax", NULL,
+				"DelegateCur", NULL,
+				NULL);
+			if (err) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+				goto done;
+			}
+
+			if (seq.via.u64 == peer->serf.seq.member_ev) {
+				skip_member = 1;
+			} else {
+				skip_member = 0;
+			}
+
+			port = 11211;
+
+			for (j = 0; j < tags.via.map.size; j++) {
+				ptr_kv = &tags.via.map.ptr[j];
+
+				if (ptr_kv->key.type != MSGPACK_OBJECT_STR) {
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect key to be string");
+					goto done;
+				}
+
+				str = &ptr_kv->key.via.str;
+				if (skip_member && ngx_strncmp(str->ptr, MEMC_SERVER_TAG_KEY, str->size) == 0) {
+					if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect value to be string");
+						goto done;
+					}
+
+					str = &ptr_kv->val.via.str;
+					if (ngx_strncmp(str->ptr, MEMC_SERVER_TAG_VAL, str->size) == 0) {
+						skip_member = 0;
+						continue;
+					}
+
+					break;
+				}
+
+				if (ngx_strncmp(str->ptr, MEMC_PORT_TAG_KEY, str->size) == 0) {
+					if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect value to be string");
+						goto done;
+					}
+
+					str = &ptr_kv->val.via.str;
+
+					rc = ngx_atoi((u_char *)str->ptr, str->size);
+					if (rc == NGX_ERROR) {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect " MEMC_PORT_TAG_KEY " tag to be valid number");
+
+						skip_member = 1;
+						break;
+					}
+
+					port = (unsigned short)rc;
+					continue;
+				}
+			}
+
+			if (skip_member) {
+				continue;
+			}
+
+			if (remove_member) {
+				// remove server here
+				continue;
+			}
+
+			if (update_member) {
+				continue;
+
+				// server = pull old server here
+
+				if (!server) {
+					continue;
+				}
+			}
+
+			if (add_member) {
+				server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
+			}
+
+			switch (addr.via.bin.size) {
+				case 4:
+					server->sin.sin_family = AF_INET;
+					server->sin.sin_port = htons(port);
+					s_addr = (unsigned char *)&server->sin.sin_addr.s_addr;
+
+					server->addr_len = sizeof(struct sockaddr_in);
+					break;
+#if NGX_HAVE_INET6
+				case 16:
+					server->sin6.sin6_family = AF_INET6;
+					server->sin6.sin6_port = htons(port);
+					s_addr = &server->sin6.sin6_addr.s6_addr[0];
+
+					server->addr_len = sizeof(struct sockaddr_in6);
+					break;
+#else /* NGX_HAVE_INET6 */
+				case 16:
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "member has IPv6 address but nginx built without IPv6 support, skipping member");
+					continue;
+#endif /* NGX_HAVE_INET6 */
+				default:
+					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect Addr to be an array of length 4 or 16");
+					goto done;
+			}
+
+			ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
+
+			if (!add_member) {
+				continue;
+			}
+
+			server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
+			server->name.len = name.via.str.size;
+
+			ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
+			server->name.data[server->name.len] = '\0';
+
+			ngx_crc32_init(base_hash);
+			ngx_crc32_update(&base_hash, str_addr, ngx_inet_ntop(server->addr.sa_family, s_addr, str_addr, NGX_SOCKADDR_STRLEN));
+			ngx_crc32_update(&base_hash, (u_char *)"", 1);
+
+			if (port == 11211) {
+				ngx_crc32_update(&base_hash, (u_char *)"11211", strlen("11211") - 1);
+			} else {
+				ngx_crc32_update(&base_hash, str_port, snprintf((char *)str_port, sizeof("65535") - 1, "%hu", port));
+			}
+
+			prev_hash.value = 0;
+
+			for (j = 0; j < CHASH_NPOINTS; j++) {
+				hash = base_hash;
+
+				ngx_crc32_update(&hash, prev_hash.byte, 4);
+				ngx_crc32_final(hash);
+
+				peer->memc.points[peer->memc.npoints].hash = hash;
+				peer->memc.points[peer->memc.npoints].data = server;
+				peer->memc.npoints++;
+
+#if NGX_HAVE_LITTLE_ENDIAN
+				prev_hash.value = hash;
+#else /* NGX_HAVE_LITTLE_ENDIAN */
+				prev_hash.byte[0] = (u_char)(hash & 0xff);
+				prev_hash.byte[1] = (u_char)((hash >> 8) & 0xff);
+				prev_hash.byte[2] = (u_char)((hash >> 16) & 0xff);
+				prev_hash.byte[3] = (u_char)((hash >> 24) & 0xff);
+#endif /* NGX_HAVE_LITTLE_ENDIAN */
+			}
+		}
+
+		if (add_member) {
+			ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t), chash_cmp_points);
+
+			for (i = 0, j = 1; j < peer->memc.npoints; j++) {
+				if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
+					peer->memc.points[++i] = peer->memc.points[j];
+				}
+			}
+
+			peer->memc.npoints = i + 1;
+		}
 	} else {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number: %x", seq.via.u64);
 	}
@@ -848,7 +1252,7 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, peer->serf.auth.len);
 				msgpack_pack_str_body(pk, peer->serf.auth.data, peer->serf.auth.len);
 				break;
-			case STREAM_KEY_EVENTS:
+			case STREAM_KEY_EVSUB:
 				peer->serf.seq.key_ev = seq;
 
 				// {"Command": "stream", "Seq": 0}
@@ -871,8 +1275,68 @@ static void serf_write_handler(ngx_event_t *wev)
 
 				msgpack_pack_str(pk, sizeof("Type") - 1);
 				msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
-				msgpack_pack_str(pk, sizeof(SUBSCRIBE_EVENTS) - 1);
-				msgpack_pack_str_body(pk, SUBSCRIBE_EVENTS, sizeof(SUBSCRIBE_EVENTS) - 1);
+				msgpack_pack_str(pk, sizeof(STREAM_KEY_EVENTS) - 1);
+				msgpack_pack_str_body(pk, STREAM_KEY_EVENTS, sizeof(STREAM_KEY_EVENTS) - 1);
+				break;
+			case STREAM_MEMBER_EVSUB:
+				peer->serf.seq.member_ev = seq;
+
+				// {"Command": "stream", "Seq": 0}
+				// {"Type": "member-join,user:deploy"}`
+
+				// header
+				msgpack_pack_map(pk, 2);
+
+				msgpack_pack_str(pk, sizeof("Command") - 1);
+				msgpack_pack_str_body(pk, "Command", sizeof("Command") - 1);
+				msgpack_pack_str(pk, sizeof("stream") - 1);
+				msgpack_pack_str_body(pk, "stream", sizeof("stream") - 1);
+
+				msgpack_pack_str(pk, sizeof("Seq") - 1);
+				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
+				msgpack_pack_uint64(pk, seq);
+
+				// body
+				msgpack_pack_map(pk, 1);
+
+				msgpack_pack_str(pk, sizeof("Type") - 1);
+				msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
+				msgpack_pack_str(pk, sizeof(STREAM_MEMBER_EVENTS) - 1);
+				msgpack_pack_str_body(pk, STREAM_MEMBER_EVENTS, sizeof(STREAM_MEMBER_EVENTS) - 1);
+				break;
+			case LISTING_MEMBERS:
+				peer->serf.seq.list = seq;
+
+				// {"Command": "members-filtered", "Seq": 0}
+				// {"Tags": {"key": "val"}, "Status": "alive", "Name": "node1"}
+
+				// header
+				msgpack_pack_map(pk, 2);
+
+				msgpack_pack_str(pk, sizeof("Command") - 1);
+				msgpack_pack_str_body(pk, "Command", sizeof("Command") - 1);
+				msgpack_pack_str(pk, sizeof("members-filtered") - 1);
+				msgpack_pack_str_body(pk, "members-filtered", sizeof("members-filtered") - 1);
+
+				msgpack_pack_str(pk, sizeof("Seq") - 1);
+				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
+				msgpack_pack_uint64(pk, seq);
+
+				// body
+				msgpack_pack_map(pk, 2);
+
+				msgpack_pack_str(pk, sizeof("Tags") - 1);
+				msgpack_pack_str_body(pk, "Tags", sizeof("Tags") - 1);
+				msgpack_pack_map(pk, 1);
+				msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_KEY) - 1);
+				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_KEY, sizeof(MEMC_SERVER_TAG_KEY) - 1);
+				msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_VAL) - 1);
+				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_VAL, sizeof(MEMC_SERVER_TAG_VAL) - 1);
+
+				msgpack_pack_str(pk, sizeof("Status") - 1);
+				msgpack_pack_str_body(pk, "Status", sizeof("Status") - 1);
+				msgpack_pack_str(pk, sizeof("alive") - 1);
+				msgpack_pack_str_body(pk, "alive", sizeof("alive") - 1);
 				break;
 		}
 
@@ -993,31 +1457,559 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 	}
 }
 
+static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
+{
+	chash_point_t *first = (chash_point_t *) one;
+	chash_point_t *second = (chash_point_t *) two;
+
+	if (first->hash < second->hash) {
+		return -1;
+	} else if (first->hash > second->hash) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uint32_t hash)
+{
+	ngx_uint_t i, j, k;
+
+	/* find first point >= hash */
+
+	i = 0;
+	j = npoints;
+
+	while (i < j) {
+		k = (i + j) / 2;
+
+		if (hash > point[k].hash) {
+			i = k + 1;
+		} else if (hash < point[k].hash) {
+			j = k;
+		} else {
+			return k;
+		}
+	}
+
+	return i;
+}
+
+static void memc_read_handler(ngx_event_t *rev)
+{
+	ngx_connection_t *c;
+	memc_op_st *op;
+	ssize_t size, n;
+	u_char *new_buf;
+
+	c = rev->data;
+	op = c->data;
+
+	if (!op->recv.start) {
+		/* 1/4 of the page_size, is it enough? */
+		op->recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
+		if (!op->recv.start) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated recv buffer");
+			return;
+		}
+
+		op->recv.pos = op->recv.start;
+		op->recv.last = op->recv.start;
+		op->recv.end = op->recv.start + ngx_pagesize / 4;
+	}
+
+	while (1) {
+		n = op->recv.end - op->recv.last;
+
+		/* buffer not big enough? enlarge it by twice */
+		if (n == 0) {
+			size = op->recv.end - op->recv.start;
+
+			new_buf = ngx_palloc(c->pool, size * 2);
+			if (!new_buf) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated new recv buffer");
+				return;
+			}
+
+			ngx_memcpy(new_buf, op->recv.start, size);
+
+			op->recv.start = new_buf;
+			op->recv.pos = new_buf;
+			op->recv.last = new_buf + size;
+			op->recv.end = new_buf + size * 2;
+
+			n = op->recv.end - op->recv.last;
+		}
+
+		size = c->recv(c, op->recv.last, n);
+
+		if (size > 0) {
+			op->recv.last += size;
+			continue;
+		} else if (size == 0 || size == NGX_AGAIN) {
+			break;
+		} else {
+			c->error = 1;
+			return;
+		}
+	}
+
+	if (op->ev) {
+		ngx_post_event(op->ev, &ngx_posted_events);
+	} else {
+		(void) memc_complete_operation(op, NULL);
+	}
+}
+
+static void memc_write_handler(ngx_event_t *wev)
+{
+	ngx_connection_t *c;
+	memc_op_st *op;
+	ssize_t size;
+
+	c = wev->data;
+	op = c->data;
+
+	while (op->send.pos < op->send.last) {
+		size = c->send(c, op->send.pos, op->send.last - op->send.pos);
+		if (size > 0) {
+			op->send.pos += size;
+		} else if (size == 0 || size == NGX_AGAIN) {
+			return;
+		} else {
+			c->error = 1;
+			return;
+		}
+	}
+
+	if (op->send.pos == op->send.last) {
+		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "memc send done");
+
+		ngx_pfree(c->pool, op->send.start);
+
+		op->send.start = NULL;
+		op->send.pos = NULL;
+		op->send.last = NULL;
+		op->send.end = NULL;
+
+		c->write->handler = dummy_write_handler;
+	}
+}
+
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, ngx_event_t *ev)
+{
+	memc_op_st *op = NULL;
+	unsigned char *data = NULL;
+	size_t len, hdr_len, ext_len = 0, body_len;
+	int sock = -1;
+	ngx_connection_t *c = NULL;
+	memc_server_st *server;
+	ngx_event_t *rev, *wev;
+	ngx_int_t event;
+	uint32_t hash;
+	protocol_binary_request_header *req_hdr;
+#if NGX_DEBUG
+	const char *cmd_str;
+	u_char buf[64];
+#endif
+
+	if (!peer->memc.npoints) {
+		return NULL;
+	}
+
+	len = 8;
+
+	switch (cmd) {
+		case PROTOCOL_BINARY_CMD_GET:
+			len += sizeof(protocol_binary_request_get);
+
+#if NGX_DEBUG
+			cmd_str = "GET";
+#endif
+			break;
+		case PROTOCOL_BINARY_CMD_SET:
+			len += sizeof(protocol_binary_request_set);
+			ext_len = sizeof(((protocol_binary_request_set *)NULL)->message.body);
+
+#if NGX_DEBUG
+			cmd_str = "SET";
+#endif
+			break;
+		case PROTOCOL_BINARY_CMD_DELETE:
+			len += sizeof(protocol_binary_request_delete);
+
+#if NGX_DEBUG
+			cmd_str = "DELETE";
+#endif
+			break;
+		default:
+			goto error;
+	}
+
+	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
+		"memcached operation: %s \"%*s%s\"",
+		cmd_str,
+		ngx_hex_dump(buf, key->data, ngx_min(key->len, 32)) - buf, buf,
+		key->len > 32 ? "..." : "");
+
+	hdr_len = len;
+	body_len = ext_len + key->len;
+
+	if (value) {
+		body_len += value->len;
+	}
+
+	len += body_len;
+
+	data = ngx_palloc(peer->pool, len);
+	if (!data) {
+		goto error;
+	}
+
+	ngx_memzero(data, hdr_len);
+
+	// data[0..1] = request id
+	// data[2..3] = sequence number
+	// data[4..5] = total datagrams
+	// data[6..7] = reserved
+
+	if (RAND_bytes(&data[0], 2) != 1) {
+		goto error;
+	}
+
+	data[4] = 0;
+	data[5] = 1;
+
+	req_hdr = (protocol_binary_request_header *)&data[8];
+
+	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
+	req_hdr->request.opcode = cmd;
+	req_hdr->request.keylen = htons(key->len);
+	req_hdr->request.extlen = ext_len;
+	req_hdr->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
+	req_hdr->request.bodylen = htonl(body_len);
+
+	ngx_memcpy(&data[hdr_len], key->data, key->len);
+
+	if (value) {
+		ngx_memcpy(&data[hdr_len + key->len], value->data, value->len);
+	}
+
+	op = ngx_pcalloc(peer->pool, sizeof(memc_op_st));
+	if (!op) {
+		goto error;
+	}
+
+	op->cmd = cmd;
+
+	op->peer = peer;
+	op->ev = ev;
+
+	op->send.start = data;
+	op->send.pos = data;
+	op->send.last = data + len;
+	op->send.end = data + len;
+
+	hash = ngx_crc32_long(key->data, key->len);
+	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
+	server = peer->memc.points[hash % peer->memc.npoints].data;
+
+	sock = socket(server->addr.sa_family, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+	if (sock == -1) {
+		goto error;
+	}
+
+	c = ngx_get_connection(sock, peer->log);
+	if (!c) {
+		goto error;
+	}
+
+	c->data = op;
+	op->c = c;
+
+	c->recv = ngx_udp_recv;
+	c->send = ngx_send;
+	c->recv_chain = ngx_recv_chain;
+	c->send_chain = ngx_send_chain;
+
+	rev = c->read;
+	wev = c->write;
+
+	c->log = peer->log;
+	rev->log = c->log;
+	wev->log = c->log;
+	c->pool = peer->pool;
+
+	c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
+
+	if (connect(sock, &server->addr, server->addr_len) == -1) {
+		goto error;
+	}
+
+	/* UDP sockets are always ready to write */
+	wev->ready = 1;
+
+	if (ngx_add_event) {
+		event = (ngx_event_flags & NGX_USE_CLEAR_EVENT) ?
+				/* kqueue, epoll */                 NGX_CLEAR_EVENT:
+				/* select, poll, /dev/poll */       NGX_LEVEL_EVENT;
+				/* eventport event type has no meaning: oneshot only */
+
+		if (ngx_add_event(rev, NGX_READ_EVENT, event) != NGX_OK) {
+			goto error;
+		}
+	} else {
+		/* rtsig */
+
+		if (ngx_add_conn(c) == NGX_ERROR) {
+			goto error;
+		}
+	}
+
+	rev->handler = memc_read_handler;
+	wev->handler = memc_write_handler;
+
+	wev->handler(wev);
+
+	return op;
+
+error:
+	if (c) {
+		ngx_close_connection(c);
+	} else if (sock != -1) {
+		close(sock);
+	}
+
+	if (data) {
+		ngx_pfree(peer->pool, data);
+	}
+
+	if (op) {
+		ngx_pfree(peer->pool, op);
+	}
+
+	return NULL;
+}
+
+static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
+{
+	ngx_int_t rc;
+	ngx_str_t data;
+	unsigned short key_len, status;
+	unsigned int body_len;
+	protocol_binary_response_header *res_hdr;
+	ngx_uint_t log_level;
+
+	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
+		return NGX_AGAIN;
+	}
+
+	// op->recv.pos[0..1] = request id
+	// op->recv.pos[2..3] = sequence number
+	// op->recv.pos[4..5] = total datagrams
+	// op->recv.pos[6..7] = reserved
+
+	if (op->recv.pos[4] != 0 || op->recv.pos[5] != 1) {
+		rc = NGX_ERROR;
+		goto cleanup;
+	}
+
+	res_hdr = (protocol_binary_response_header *)&op->recv.pos[8];
+
+	if (res_hdr->response.magic != PROTOCOL_BINARY_RES || res_hdr->response.opcode != op->cmd) {
+		rc = NGX_ERROR;
+		goto cleanup;
+	}
+
+	key_len = htons(res_hdr->response.keylen);
+	body_len = htonl(res_hdr->response.bodylen);
+
+	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header) + body_len) {
+		rc = NGX_ERROR;
+		goto cleanup;
+	}
+
+	data.data = op->recv.pos + 8
+		+ sizeof(protocol_binary_response_header)
+		+ res_hdr->response.extlen
+		+ key_len;
+	data.len = body_len
+		- key_len
+		- res_hdr->response.extlen;
+
+	status = htons(res_hdr->response.status);
+
+	if (status == PROTOCOL_BINARY_RESPONSE_SUCCESS) {
+		if (value) {
+			*value = data;
+		}
+
+		rc = NGX_OK;
+	} else {
+		log_level = NGX_LOG_ERR;
+
+		switch (op->cmd) {
+			case PROTOCOL_BINARY_CMD_GET:
+				if (status == PROTOCOL_BINARY_RESPONSE_KEY_ENOENT) {
+					log_level = NGX_LOG_DEBUG;
+				}
+
+				break;
+			default:
+				break;
+		}
+
+		ngx_log_error(log_level, op->c->log, 0, "memcached error %hd: %*s", status, data.len, data.data);
+
+		rc = NGX_ERROR;
+	}
+
+cleanup:
+	ngx_close_connection(op->c);
+
+	op->c->write->handler = NULL;
+	op->c->read->handler = NULL;
+
+	if (rc == NGX_ERROR) {
+		ngx_pfree(op->c->pool, op->recv.start);
+	}
+
+	ngx_pfree(op->c->pool, op);
+
+	return rc;
+}
+
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
-	// add
+	peer_st *peer;
+	ngx_str_t key, value;
+	unsigned int len;
+#if MEMC_KEYS_ARE_HEX
+	u_char hex[128];
+#endif /* MEMC_KEYS_ARE_HEX */
+	u_char buf[NGX_SSL_MAX_SESSION_SIZE];
+	u_char *p;
 
+	peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
+	if (!peer) {
+		return 0; // -1?
+	}
+
+#if MEMC_KEYS_ARE_HEX
+	p = (u_char *)SSL_SESSION_get_id(sess, &len);
+
+	if (len > 64) {
+		return 0;
+	}
+
+	key.data = hex;
+	key.len = ngx_hex_dump(hex, p, len) - hex;
+#else /* MEMC_KEYS_ARE_HEX */
+	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
+	key.len = len;
+#endif /* MEMC_KEYS_ARE_HEX */
+
+	value.data = buf;
+	value.len = i2d_SSL_SESSION(sess, NULL);
+
+	/* do not cache too big session */
+	if (value.len > NGX_SSL_MAX_SESSION_SIZE) {
+		return 0;
+	}
+
+	p = buf;
+	i2d_SSL_SESSION(sess, &p);
+
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, NULL);
 	return 0;
 }
 
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len, int *copy)
 {
-#if 0
-	if (!started) {
-		// get
+	memc_op_st *op;
+	peer_st *peer;
+	ngx_str_t key, value;
+	ngx_connection_t *c;
+	ngx_int_t rc;
+#if MEMC_KEYS_ARE_HEX
+	u_char hex[128];
+
+	if (len > 64) {
+		return NULL;
+	}
+#endif /* MEMC_KEYS_ARE_HEX */
+
+	c = ngx_ssl_get_connection(ssl_conn);
+
+	op = SSL_get_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index);
+	if (op) {
+		rc = memc_complete_operation(op, &value);
+
+		if (rc == NGX_AGAIN) {
+			return SSL_magic_pending_session_ptr();
+		}
+
+		if (rc == NGX_OK) {
+			return d2i_SSL_SESSION(NULL, (const uint8_t **)&value.data, value.len);
+		}
+
+		/* rc == NGX_ERROR */
+		return NULL;
 	}
 
-	if (done) {
+	peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
+	if (!peer) {
+		return NULL;
+	}
+
+#if MEMC_KEYS_ARE_HEX
+	key.data = hex;
+	key.len = ngx_hex_dump(hex, id, len) - hex;
+#else /* MEMC_KEYS_ARE_HEX */
+	key.data = id;
+	key.len = len;
+#endif /* MEMC_KEYS_ARE_HEX */
+
+	op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, c->write);
+	if (!op) {
+		return NULL;
+	}
+
+	if (!SSL_set_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index, op)) {
 		return NULL;
 	}
 
 	return SSL_magic_pending_session_ptr();
-#else
-	return NULL;
-#endif
 }
 
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 {
-	// del
+	peer_st *peer;
+	ngx_str_t key;
+	unsigned int len;
+#if MEMC_KEYS_ARE_HEX
+	u_char hex[128];
+	u_char *p;
+#endif /* MEMC_KEYS_ARE_HEX */
+
+	peer = SSL_CTX_get_ex_data(ssl, g_ssl_ctx_exdata_peer_index);
+	if (!peer) {
+		return;
+	}
+
+#if MEMC_KEYS_ARE_HEX
+	p = (u_char *)SSL_SESSION_get_id(sess, &len);
+
+	if (len > 64) {
+		return;
+	}
+
+	key.data = hex;
+	key.len = ngx_hex_dump(hex, p, len) - hex;
+#else /* MEMC_KEYS_ARE_HEX */
+	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
+	key.len = len;
+#endif /* MEMC_KEYS_ARE_HEX */
+
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
 }
