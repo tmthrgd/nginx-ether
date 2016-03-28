@@ -471,8 +471,8 @@ static void serf_read_handler(ngx_event_t *rev)
 	peer = c->data;
 
 	if (!peer->serf.recv.start) {
-		/* 1/2 of the page_size, is it enough? */
-		peer->serf.recv.start = ngx_palloc(c->pool, ngx_pagesize / 2);
+		/* 1/4 of the page_size, is it enough? */
+		peer->serf.recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
 		if (!peer->serf.recv.start) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated recv buffer");
 			return;
@@ -480,7 +480,7 @@ static void serf_read_handler(ngx_event_t *rev)
 
 		peer->serf.recv.pos = peer->serf.recv.start;
 		peer->serf.recv.last = peer->serf.recv.start;
-		peer->serf.recv.end = peer->serf.recv.start + ngx_pagesize / 2;
+		peer->serf.recv.end = peer->serf.recv.start + ngx_pagesize / 4;
 	}
 
 	while (1) {
