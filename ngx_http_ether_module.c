@@ -395,7 +395,7 @@ static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
 	msgpack_object *out;
 	msgpack_object_kv *ptr;
 	msgpack_object_str *str;
-	size_t i, j;
+	size_t i;
 	int found;
 	char *name = NULL;
 
@@ -404,18 +404,18 @@ static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
 	}
 
 	va_start(ap, obj);
-	for (i = 0; i == 0 || name; i++) {
-		if ((i & 1)) {
-			out = va_arg(ap, msgpack_object *);
-		} else {
-			name = va_arg(ap, char *);
-			continue;
+	for (;;) {
+		name = va_arg(ap, char *);
+		if (!name) {
+			break;
 		}
+
+		out = va_arg(ap, msgpack_object *);
 
 		found = 0;
 
-		for (j = 0; j < obj->via.map.size && !found; j++) {
-			ptr = &obj->via.map.ptr[j];
+		for (i = 0; i < obj->via.map.size; i++) {
+			ptr = &obj->via.map.ptr[i];
 
 			if (ptr->key.type != MSGPACK_OBJECT_STR) {
 				va_end(ap);
@@ -434,6 +434,8 @@ static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
 				if (out) {
 					*out = ptr->val;
 				}
+
+				break;
 			}
 		}
 
