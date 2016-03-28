@@ -528,10 +528,10 @@ static void serf_read_handler(ngx_event_t *rev)
 			break;
 		case NGX_AGAIN:
 			goto cleanup;
-		case NGX_ERROR:
-			goto done;
 		case NGX_ABORT:
 			exit(2); // something else?
+		default: /* NGX_ERROR */
+			goto done;
 	}
 
 	seq.type = MSGPACK_OBJECT_POSITIVE_INTEGER;
@@ -605,10 +605,10 @@ static void serf_read_handler(ngx_event_t *rev)
 			case NGX_AGAIN:
 				peer->serf.recv.pos = hdr_start;
 				goto cleanup;
-			case NGX_ERROR:
-				goto done;
 			case NGX_ABORT:
 				exit(2); // something else?
+			default: /* NGX_ERROR */
+				goto done;
 		}
 
 		event.type = MSGPACK_OBJECT_STR;
