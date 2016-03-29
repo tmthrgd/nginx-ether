@@ -560,11 +560,10 @@ static void serf_read_handler(ngx_event_t *rev)
 	key_st *key;
 	ngx_queue_t *q;
 	char *err;
-	int skip_member, have_changed;
+	int skip_member, have_changed, remove_member, add_member, update_member;
 	memc_server_st *server = NULL;
 	unsigned char *s_addr;
-	int remove_member = 0, add_member = 0, update_member = 0;
-	size_t i, j;
+	size_t i, j, num = 0;
 	uint32_t hash, base_hash;
 	union {
 		uint32_t value;
@@ -574,7 +573,6 @@ static void serf_read_handler(ngx_event_t *rev)
 	unsigned short port;
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
-	size_t num = 0;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -940,6 +938,10 @@ static void serf_read_handler(ngx_event_t *rev)
 			default: /* NGX_ERROR */
 				goto done;
 		}
+
+		add_member = 0;
+		remove_member = 0;
+		update_member = 0;
 
 		if (seq.via.u64 == peer->serf.seq.list) {
 			members.type = MSGPACK_OBJECT_ARRAY;
@@ -1529,8 +1531,8 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 {
-	chash_point_t *first = (chash_point_t *) one;
-	chash_point_t *second = (chash_point_t *) two;
+	chash_point_t *first = (chash_point_t *)one;
+	chash_point_t *second = (chash_point_t *)two;
 
 	if (first->hash < second->hash) {
 		return -1;
