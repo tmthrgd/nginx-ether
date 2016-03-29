@@ -143,7 +143,7 @@ static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uin
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, ngx_event_t *ev);
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value);
 static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
@@ -1596,7 +1596,7 @@ static void memc_write_handler(ngx_event_t *wev)
 	}
 }
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, ngx_event_t *ev)
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL;
@@ -1703,7 +1703,6 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	op->cmd = cmd;
 
 	op->peer = peer;
-	op->ev = ev;
 
 	op->send.start = data;
 	op->send.pos = data;
@@ -1920,7 +1919,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	p = buf;
 	i2d_SSL_SESSION(sess, &p);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, NULL);
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value);
 	return 0;
 }
 
@@ -1970,10 +1969,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	key.len = len;
 #endif /* MEMC_KEYS_ARE_HEX */
 
-	op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, c->write);
+	op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL);
 	if (!op) {
 		return NULL;
 	}
+
+	op->ev = c->write;
 
 	if (!SSL_set_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index, op)) {
 		return NULL;
@@ -2011,5 +2012,5 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	key.len = len;
 #endif /* MEMC_KEYS_ARE_HEX */
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL);
 }
