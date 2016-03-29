@@ -110,6 +110,7 @@ typedef struct _peer_st {
 	struct {
 		//ngx_queue_t servers;
 
+		ngx_uint_t tpoints;
 		ngx_uint_t npoints;
 		chash_point_t *points;
 	} memc;
@@ -383,11 +384,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 		ngx_queue_init(&peer->ticket_keys);
 
-		peer->memc.points = ngx_palloc(cf->pool, sizeof(chash_point_t) * CHASH_NPOINTS);
-		if (!peer->memc.points) {
-			return NGX_CONF_ERROR;
-		}
-
 		pc = &peer->serf.pc;
 
 		pc->sockaddr = u.addrs[0].sockaddr;
@@ -573,6 +569,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	unsigned short port;
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
+	chash_point_t *points;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -971,6 +968,26 @@ static void serf_read_handler(ngx_event_t *rev)
 				update_member = 1;
 			} else {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", event.via.str.size, event.via.str.ptr);
+				goto done;
+			}
+		}
+
+		if (peer->memc.points && peer->memc.tpoints < peer->memc.npoints + CHASH_NPOINTS * members.via.array.size) {
+			peer->memc.tpoints = peer->memc.npoints + CHASH_NPOINTS * ngx_min(members.via.array.size, 10);
+
+			points = ngx_palloc(c->pool, sizeof(chash_point_t) * peer->memc.tpoints);
+			if (!points) {
+				goto done;
+			}
+
+			ngx_memcpy(points, peer->memc.points, sizeof(chash_point_t) * peer->memc.npoints);
+
+			peer->memc.points = points;
+		} else if (!peer->memc.points) {
+			peer->memc.tpoints = CHASH_NPOINTS * ngx_min(members.via.array.size, 10);
+
+			peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_t) * peer->memc.tpoints);
+			if (!peer->memc.points) {
 				goto done;
 			}
 		}
