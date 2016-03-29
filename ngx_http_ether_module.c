@@ -1610,8 +1610,10 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	protocol_binary_request_header *req_hdr;
 #if NGX_DEBUG
 	const char *cmd_str;
+#	if !MEMC_KEYS_ARE_HEX
 	u_char buf[64];
-#endif
+#	endif /* !MEMC_KEYS_ARE_HEX */
+#endif /* NGX_DEBUG */
 
 	if (!peer->memc.npoints) {
 		return NULL;
@@ -1646,11 +1648,15 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 			goto error;
 	}
 
+#if MEMC_KEYS_ARE_HEX
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0, "memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
+#else /* MEMC_KEYS_ARE_HEX */
 	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
 		"memcached operation: %s \"%*s%s\"",
 		cmd_str,
 		ngx_hex_dump(buf, key->data, ngx_min(key->len, 32)) - buf, buf,
 		key->len > 32 ? "..." : "");
+#endif /* MEMC_KEYS_ARE_HEX */
 
 	hdr_len = len;
 	body_len = ext_len + key->len;
