@@ -149,6 +149,8 @@ static void exit_process(ngx_cycle_t *cycle);
 static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
+static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
 
@@ -186,8 +188,8 @@ static ngx_command_t module_commands[] = {
 	  NULL },
 
 	{ ngx_string("ether_auth"),
-	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
-	  ngx_conf_set_str_slot,
+	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE12,
+	  set_opt_env_str,
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(srv_conf_t, serf_auth),
 	  NULL },
@@ -459,6 +461,41 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 			ssl->session_timeout = REALTIME_MAXDELTA;
 		}
+	}
+
+	return NGX_CONF_OK;
+}
+
+static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+	char *p = conf;
+
+	ngx_str_t *field, *value;
+	ngx_conf_post_t *post;
+
+	field = (ngx_str_t *)(p + cmd->offset);
+	if (field->data) {
+		return "is duplicate";
+	}
+
+	value = cf->args->elts;
+
+	if (cf->args->nelts == 3) {
+		if (ngx_strcmp(value[2].data, "env") != 0) {
+			return "only env flag supported";
+		}
+
+		field->data = (u_char *)getenv((const char *)value[1].data);
+		if (field->data) {
+			field->len = ngx_strlen(field->data);
+		}
+	} else {
+		*field = value[1];
+	}
+
+	if (cmd->post) {
+		post = cmd->post;
+		return post->post_handler(cf, post, field);
 	}
 
 	return NGX_CONF_OK;
