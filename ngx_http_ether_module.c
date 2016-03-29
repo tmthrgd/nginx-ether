@@ -12,6 +12,8 @@
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
 
+#define RETRIEVE_KEYS_QUERY "retrieve-keys"
+
 #define STREAM_KEY_EVENTS ("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
 
 #define MEMC_SERVER_TAG_KEY "role"
@@ -41,6 +43,7 @@ typedef enum {
 	HANDSHAKING,
 	AUTHENTICATING,
 	STREAM_KEY_EVSUB,
+	RETRIEVE_KEYS,
 	STREAM_MEMBER_EVSUB,
 	LISTING_MEMBERS
 } state_et;
@@ -101,6 +104,7 @@ typedef struct _peer_st {
 			uint64_t handshake;
 			uint64_t auth;
 			uint64_t key_ev;
+			uint64_t key_query;
 			uint64_t member_ev;
 			uint64_t list;
 		} seq;
@@ -552,7 +556,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	peer_st *peer;
 	ssize_t size, n;
 	msgpack_unpacked und;
-	msgpack_object seq, error, event, name, payload = {0}, members, addr, tags, status;
+	msgpack_object *ptr, seq, error, event, name, payload = {0}, members, addr, tags, status, type, default_key, keys;
 	msgpack_object_kv *ptr_kv;
 	msgpack_object_str *str;
 	void *hdr_start;
@@ -573,6 +577,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	unsigned short port;
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
+	ngx_buf_t dummy_recv;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -700,7 +705,7 @@ static void serf_read_handler(ngx_event_t *rev)
 		// }
 
 		if (peer->serf.state == STREAM_KEY_EVSUB) {
-			peer->serf.state = STREAM_MEMBER_EVSUB;
+			peer->serf.state = RETRIEVE_KEYS;
 
 			c->write->handler = serf_write_handler;
 			goto done;
@@ -851,6 +856,170 @@ static void serf_read_handler(ngx_event_t *rev)
 		} else {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", name.via.str.size, name.via.str.ptr);
 			goto done;
+		}
+
+#if NGX_DEBUG
+		for (q = ngx_queue_head(&peer->ticket_keys);
+			q != ngx_queue_sentinel(&peer->ticket_keys);
+			q = ngx_queue_next(q)) {
+			num++;
+		}
+
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
+#endif
+	} else if (seq.via.u64 == peer->serf.seq.key_query) {
+		// {"Seq": 0, "Error": ""}
+		// {
+		// 	"Type": "response",
+		// 	"From": "foo",
+		// 	"Payload": "1.02",
+		// }
+
+		if (peer->serf.state == RETRIEVE_KEYS) {
+			peer->serf.state = STREAM_MEMBER_EVSUB;
+
+			c->write->handler = serf_write_handler;
+			goto done;
+		}
+
+		if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
+			goto done;
+		}
+
+		switch (ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
+			case NGX_OK:
+				break;
+			case NGX_AGAIN:
+				peer->serf.recv.pos = hdr_start;
+				goto cleanup;
+			case NGX_ABORT:
+				exit(2); // something else?
+			default: /* NGX_ERROR */
+				goto done;
+		}
+
+		type.type = MSGPACK_OBJECT_STR;
+
+		err = ether_msgpack_parse_map(&und.data, "Type", &type, NULL);
+		if (err) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+			goto done;
+		}
+
+		if (ngx_strncmp(type.via.str.ptr, "ack", type.via.str.size) == 0) {
+			goto done;
+		}
+
+		if (ngx_strncmp(type.via.str.ptr, "done", type.via.str.size) == 0) {
+			goto done;
+		}
+
+		if (ngx_strncmp(type.via.str.ptr, "response", type.via.str.size) != 0) {
+			goto done;
+		}
+
+		payload.type = MSGPACK_OBJECT_BIN;
+
+		err = ether_msgpack_parse_map(&und.data, "From", NULL, "Payload", &payload, NULL);
+		if (err) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+			goto done;
+		}
+
+		dummy_recv.start = (u_char *)payload.via.bin.ptr;
+		dummy_recv.pos = (u_char *)payload.via.bin.ptr;
+		dummy_recv.last = (u_char *)payload.via.bin.ptr + payload.via.bin.size;
+		dummy_recv.end = (u_char *)payload.via.bin.ptr + payload.via.bin.size;
+
+		switch (ether_msgpack_parse(&und, &dummy_recv, 0, c->log)) {
+			case NGX_OK:
+				break;
+			case NGX_ABORT:
+				exit(2); // something else?
+			default: /* NGX_AGAIN || NGX_ERROR */
+				goto done;
+		}
+
+		default_key.type = MSGPACK_OBJECT_BIN;
+		keys.type = MSGPACK_OBJECT_ARRAY;
+
+		err = ether_msgpack_parse_map(&und.data, "Default", &default_key, "Keys", &keys, NULL);
+		if (err) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+			goto done;
+		}
+
+		if (default_key.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid default key size");
+			goto done;
+		}
+
+		ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+			"ssl session ticket key set default: \"%*s\"",
+			ngx_hex_dump(buf, (u_char *)default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+		if (peer->default_ticket_key) {
+			peer->default_ticket_key->was_default = 1;
+			peer->default_ticket_key = NULL;
+		}
+
+		for (i = 0; i < keys.via.array.size; i++) {
+			ptr = &keys.via.array.ptr[i];
+
+			if (ptr->type != MSGPACK_OBJECT_BIN) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, wrong type given");
+				goto done;
+			}
+
+			if (ptr->via.bin.size != SSL_TICKET_KEY_NAME_LEN + 32) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid ssl session ticket key size");
+				goto done;
+			}
+
+			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+				"ssl session ticket key install: \"%*s\"",
+				ngx_hex_dump(buf, (u_char *)ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+			if (!ngx_queue_empty(&peer->ticket_keys)) {
+				for (q = ngx_queue_head(&peer->ticket_keys);
+					q != ngx_queue_sentinel(&peer->ticket_keys);
+					q = ngx_queue_next(q)) {
+					key = ngx_queue_data(q, key_st, queue);
+
+					if (ngx_memcmp(ptr->via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+						ngx_log_error(NGX_LOG_INFO, c->log, 0, RETRIEVE_KEYS_QUERY " query: already have key");
+						goto next_key;
+					}
+				}
+			}
+
+			key = ngx_pcalloc(c->pool, sizeof(key_st)); // is this the right pool?
+			if (!key) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
+				goto done;
+			}
+
+			ngx_memcpy(key->key.name, ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
+			ngx_memcpy(key->key.aes_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
+			ngx_memcpy(key->key.hmac_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+
+			ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
+
+next_key:
+			if (ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) == 0) {
+				peer->default_ticket_key = key;
+
+				SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+			}
+
+			continue;
+		}
+
+		if (!peer->default_ticket_key) {
+			SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, RETRIEVE_KEYS_QUERY " query: no valid default key given, session ticket support disabled");
 		}
 
 #if NGX_DEBUG
@@ -1349,6 +1518,59 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
 				msgpack_pack_str(pk, sizeof(STREAM_KEY_EVENTS) - 1);
 				msgpack_pack_str_body(pk, STREAM_KEY_EVENTS, sizeof(STREAM_KEY_EVENTS) - 1);
+				break;
+			case RETRIEVE_KEYS:
+				peer->serf.seq.key_query = seq;
+
+				// {"Command": "query", "Seq": 0}
+				// {
+				// 	"FilterNodes": ["foo", "bar"],
+				// 	"FilterTags": {"role": ".*web.*"},
+				// 	"RequestAck": true,
+				// 	"Timeout": 0,
+				// 	"Name": "load",
+				// 	"Payload": "15m",
+				// }
+
+				// header
+				msgpack_pack_map(pk, 2);
+
+				msgpack_pack_str(pk, sizeof("Command") - 1);
+				msgpack_pack_str_body(pk, "Command", sizeof("Command") - 1);
+				msgpack_pack_str(pk, sizeof("query") - 1);
+				msgpack_pack_str_body(pk, "query", sizeof("query") - 1);
+
+				msgpack_pack_str(pk, sizeof("Seq") - 1);
+				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
+				msgpack_pack_uint64(pk, seq);
+
+				// body
+				msgpack_pack_map(pk, 6);
+
+				msgpack_pack_str(pk, sizeof("FilterNodes") - 1);
+				msgpack_pack_str_body(pk, "FilterNodes", sizeof("FilterNodes") - 1);
+				msgpack_pack_array(pk, 0);
+
+				msgpack_pack_str(pk, sizeof("FilterTags") - 1);
+				msgpack_pack_str_body(pk, "FilterTags", sizeof("FilterTags") - 1);
+				msgpack_pack_map(pk, 0);
+
+				msgpack_pack_str(pk, sizeof("RequestAck") - 1);
+				msgpack_pack_str_body(pk, "RequestAck", sizeof("RequestAck") - 1);
+				msgpack_pack_false(pk);
+
+				msgpack_pack_str(pk, sizeof("Timeout") - 1);
+				msgpack_pack_str_body(pk, "Timeout", sizeof("Timeout") - 1);
+				msgpack_pack_int64(pk, 0);
+
+				msgpack_pack_str(pk, sizeof("Name") - 1);
+				msgpack_pack_str_body(pk, "Name", sizeof("Name") - 1);
+				msgpack_pack_str(pk, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+				msgpack_pack_str_body(pk, RETRIEVE_KEYS_QUERY, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+
+				msgpack_pack_str(pk, sizeof("Payload") - 1);
+				msgpack_pack_str_body(pk, "Payload", sizeof("Payload") - 1);
+				msgpack_pack_bin(pk, 0);
 				break;
 			case STREAM_MEMBER_EVSUB:
 				peer->serf.seq.member_ev = seq;
