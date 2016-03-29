@@ -30,6 +30,18 @@
 
 #define CHASH_NPOINTS 160
 
+#define REALTIME_MAXDELTA 60*60*24*30
+
+#ifndef HAVE_HTONLL
+#if NGX_HAVE_LITTLE_ENDIAN
+int64_t htonll(int64_t in);
+int64_t ntohll(int64_t in);
+#else /* NGX_HAVE_LITTLE_ENDIAN */
+#define htonll(n) (n)
+#define ntohll(n) (n)
+#endif /* NGX_HAVE_LITTLE_ENDIAN */
+#endif /* HAVE_HTONLL */
+
 typedef struct _peer_st peer_st;
 
 typedef struct {
@@ -149,8 +161,8 @@ static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uin
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value);
-static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value);
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, void *data);
+static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
 static void memc_cleanup_pool_handler(void *data);
 
@@ -189,8 +201,6 @@ static ngx_command_t module_commands[] = {
 
 	ngx_null_command
 };
-
-// TODO: support ssl_session_timeout
 
 static ngx_http_module_t module_ctx = {
 	NULL,            /* preconfiguration */
@@ -441,6 +451,14 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
 		SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
 		SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
+
+		if (ssl->session_timeout > REALTIME_MAXDELTA) {
+			ngx_log_error(NGX_LOG_INFO, cf->log, 0,
+				"session_timeout cannot be greater than %d seconds, was %d seconds",
+				REALTIME_MAXDELTA, ssl->session_timeout);
+
+			ssl->session_timeout = REALTIME_MAXDELTA;
+		}
 	}
 
 	return NGX_CONF_OK;
@@ -1851,7 +1869,7 @@ static void memc_read_handler(ngx_event_t *rev)
 	if (op->ev) {
 		ngx_post_event(op->ev, &ngx_posted_events);
 	} else {
-		(void) memc_complete_operation(op, NULL);
+		(void) memc_complete_operation(op, NULL, NULL);
 		memc_cleanup_operation(op);
 	}
 }
@@ -1891,7 +1909,7 @@ static void memc_write_handler(ngx_event_t *wev)
 	}
 }
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value)
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, void *in_data)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL;
@@ -1903,11 +1921,13 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	ngx_int_t event;
 	uint32_t hash;
 	protocol_binary_request_header *req_hdr;
+	protocol_binary_request_no_extras *in_req = in_data;
+	protocol_binary_request_set *reqs, *in_reqs = in_data;
 #if NGX_DEBUG
 	const char *cmd_str;
-#	if !MEMC_KEYS_ARE_HEX
+#if !MEMC_KEYS_ARE_HEX
 	u_char buf[64];
-#	endif /* !MEMC_KEYS_ARE_HEX */
+#endif /* !MEMC_KEYS_ARE_HEX */
 #endif /* NGX_DEBUG */
 
 	if (!peer->memc.npoints) {
@@ -1989,6 +2009,21 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	req_hdr->request.extlen = ext_len;
 	req_hdr->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
 	req_hdr->request.bodylen = htonl(body_len);
+
+	if (in_req) {
+		req_hdr->request.opaque = in_req->message.header.request.opaque;
+		req_hdr->request.cas = htonll(in_req->message.header.request.cas);
+
+		switch (cmd) {
+			case PROTOCOL_BINARY_CMD_SET:
+				reqs = (protocol_binary_request_set *)req_hdr;
+				reqs->message.body.flags = htonl(in_reqs->message.body.flags);
+				reqs->message.body.expiration = htonl(in_reqs->message.body.expiration);
+				break;
+			default:
+				break;
+		}
+	}
 
 	ngx_memcpy(&data[hdr_len], key->data, key->len);
 
@@ -2091,13 +2126,15 @@ error:
 	return NULL;
 }
 
-static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
+static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void *out_data)
 {
 	ngx_str_t data;
 	unsigned short key_len, status;
 	unsigned int body_len;
 	protocol_binary_response_header *res_hdr;
 	ngx_uint_t log_level;
+	protocol_binary_response_no_extras *out_res = out_data;
+	protocol_binary_response_get *resg, *out_resg = out_data;
 
 	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
 		return NGX_AGAIN;
@@ -2134,6 +2171,21 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
 		- res_hdr->response.extlen;
 
 	status = htons(res_hdr->response.status);
+
+	if (out_res) {
+		out_res->message.header.response.status = status;
+		out_res->message.header.response.opaque = res_hdr->response.opaque;
+		out_res->message.header.response.cas = htonll(res_hdr->response.cas);
+
+		switch (op->cmd) {
+			case PROTOCOL_BINARY_CMD_GET:
+				resg = (protocol_binary_response_get *)res_hdr;
+				out_resg->message.body.flags = htonl(resg->message.body.flags);
+				break;
+			default:
+				break;
+		}
+	}
 
 	if (status == PROTOCOL_BINARY_RESPONSE_SUCCESS) {
 		if (value) {
@@ -2196,6 +2248,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 #endif /* MEMC_KEYS_ARE_HEX */
 	u_char buf[NGX_SSL_MAX_SESSION_SIZE];
 	u_char *p;
+	protocol_binary_request_set req;
 
 	peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
 	if (!peer) {
@@ -2227,7 +2280,10 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	p = buf;
 	i2d_SSL_SESSION(sess, &p);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value);
+	ngx_memzero(&req, sizeof(protocol_binary_request_set));
+	req.message.body.expiration = peer->ssl->session_timeout;
+
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
 	return 0;
 }
 
@@ -2251,7 +2307,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 	op = SSL_get_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index);
 	if (op) {
-		rc = memc_complete_operation(op, &value);
+		rc = memc_complete_operation(op, &value, NULL);
 
 		if (rc == NGX_AGAIN) {
 			return SSL_magic_pending_session_ptr();
@@ -2278,7 +2334,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	key.len = len;
 #endif /* MEMC_KEYS_ARE_HEX */
 
-	op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL);
+	op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, NULL);
 	if (!op) {
 		return NULL;
 	}
@@ -2333,5 +2389,35 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	key.len = len;
 #endif /* MEMC_KEYS_ARE_HEX */
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL);
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
 }
+
+#if !defined(HAVE_HTONLL) && NGX_HAVE_LITTLE_ENDIAN
+int64_t htonll(int64_t in)
+{
+	union {
+		int64_t i64;
+		int32_t i32[2];
+	} u;
+	u.i64 = in;
+
+	int32_t temp = u.i32[0];
+	u.i32[0] = htonl(u.i32[1]);
+	u.i32[1] = htonl(temp);
+	return u.i64;
+}
+
+int64_t ntohll(int64_t in)
+{
+	union {
+		int64_t i64;
+		int32_t i32[2];
+	} u;
+	u.i64 = in;
+
+	int32_t temp = u.i32[0];
+	u.i32[0] = ntohl(u.i32[1]);
+	u.i32[1] = ntohl(temp);
+	return u.i64;
+}
+#endif /* !defined(HAVE_HTONLL) && NGX_HAVE_LITTLE_ENDIAN */
