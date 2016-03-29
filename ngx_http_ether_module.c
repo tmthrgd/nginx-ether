@@ -1905,8 +1905,10 @@ static void memc_read_handler(ngx_event_t *rev)
 
 	if (op->ev) {
 		ngx_post_event(op->ev, &ngx_posted_events);
-	} else {
-		(void) memc_complete_operation(op, NULL, NULL);
+		return;
+	}
+
+	if (memc_complete_operation(op, NULL, NULL) != NGX_AGAIN) {
 		memc_cleanup_operation(op);
 	}
 }
