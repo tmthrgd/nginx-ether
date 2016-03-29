@@ -62,7 +62,9 @@ typedef struct {
 	union {
 		struct sockaddr addr;
 		struct sockaddr_in sin;
+#if NGX_HAVE_INET6
 		struct sockaddr_in6 sin6;
+#endif /* NGX_HAVE_INET6 */
 	};
 	size_t addr_len;
 
@@ -108,9 +110,8 @@ typedef struct _peer_st {
 	} serf;
 
 	struct {
-		//ngx_queue_t servers;
+		ngx_queue_t servers;
 
-		ngx_uint_t tpoints;
 		ngx_uint_t npoints;
 		chash_point_t *points;
 	} memc;
@@ -375,6 +376,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		peer->serf.auth.data = conf->serf_auth.data;
 		peer->serf.auth.len = conf->serf_auth.len;
 
+		ngx_queue_init(&peer->memc.servers);
+
 		if (conf->timeout != NGX_CONF_UNSET_MSEC) {
 			peer->timeout = conf->timeout;
 		}
@@ -429,7 +432,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			return NGX_CONF_ERROR;
 		}
 
-		SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
+		SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
 		SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
 		SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
@@ -557,7 +560,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	key_st *key;
 	ngx_queue_t *q;
 	char *err;
-	int skip_member;
+	int skip_member, have_changed;
 	memc_server_st *server = NULL;
 	unsigned char *s_addr;
 	int remove_member = 0, add_member = 0, update_member = 0;
@@ -571,7 +574,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	unsigned short port;
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
-	chash_point_t *points;
+	size_t num = 0;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -853,8 +856,6 @@ static void serf_read_handler(ngx_event_t *rev)
 		}
 
 #if NGX_DEBUG
-		{
-		size_t num = 0;
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
@@ -862,7 +863,6 @@ static void serf_read_handler(ngx_event_t *rev)
 		}
 
 		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
-		}
 #endif
 	} else if (seq.via.u64 == peer->serf.seq.member_ev || seq.via.u64 == peer->serf.seq.list) {
 		// seq.via.u64 == peer->serf.seq.member_ev
@@ -974,25 +974,7 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 		}
 
-		if (peer->memc.points && peer->memc.tpoints < peer->memc.npoints + CHASH_NPOINTS * members.via.array.size) {
-			peer->memc.tpoints = peer->memc.npoints + CHASH_NPOINTS * ngx_min(members.via.array.size, 10);
-
-			points = ngx_palloc(c->pool, sizeof(chash_point_t) * peer->memc.tpoints);
-			if (!points) {
-				goto done;
-			}
-
-			ngx_memcpy(points, peer->memc.points, sizeof(chash_point_t) * peer->memc.npoints);
-
-			peer->memc.points = points;
-		} else if (!peer->memc.points) {
-			peer->memc.tpoints = CHASH_NPOINTS * ngx_min(members.via.array.size, 10);
-
-			peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_t) * peer->memc.tpoints);
-			if (!peer->memc.points) {
-				goto done;
-			}
-		}
+		have_changed = 0;
 
 		for (i = 0; i < members.via.array.size; i++) {
 			name.type = MSGPACK_OBJECT_STR;
@@ -1071,29 +1053,48 @@ static void serf_read_handler(ngx_event_t *rev)
 				}
 			}
 
+			if ((update_member && skip_member) || remove_member) {
+				for (q = ngx_queue_head(&peer->memc.servers);
+					q != ngx_queue_sentinel(&peer->memc.servers);
+					q = ngx_queue_next(q)) {
+					server = ngx_queue_data(q, memc_server_st, queue);
+
+					if (server->name.len != name.via.str.size || ngx_memcmp(name.via.str.ptr, server->name.data, server->name.len) != 0) {
+						continue;
+					}
+
+					have_changed = 1;
+
+					ngx_queue_remove(q);
+					ngx_pfree(c->pool, server); // is this the right pool?
+					break;
+				}
+
+				continue;
+			}
+
 			if (skip_member) {
 				continue;
 			}
 
-			if (remove_member) {
-				// remove server here
-				continue;
-			}
-
 			if (update_member) {
-				continue;
+				for (q = ngx_queue_head(&peer->memc.servers);
+					q != ngx_queue_sentinel(&peer->memc.servers);
+					q = ngx_queue_next(q)) {
+					server = ngx_queue_data(q, memc_server_st, queue);
 
-				// server = pull old server here
-
-				if (!server) {
-					continue;
+					if (server->name.len == name.via.str.size && ngx_memcmp(name.via.str.ptr, server->name.data, server->name.len) == 0) {
+						goto update_member;
+					}
 				}
+
+				continue;
 			}
 
-			if (add_member) {
-				server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
-			}
+			/* add_member */
+			server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
 
+update_member:
 			switch (addr.via.bin.size) {
 				case 4:
 					server->sin.sin_family = AF_INET;
@@ -1122,15 +1123,59 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
 
-			if (!add_member) {
-				continue;
+			if (add_member) {
+				server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
+				server->name.len = name.via.str.size;
+
+				ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
+				server->name.data[server->name.len] = '\0';
+
+				ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
 			}
 
-			server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
-			server->name.len = name.via.str.size;
+			have_changed = 1;
+		}
 
-			ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
-			server->name.data[server->name.len] = '\0';
+		if (!have_changed) {
+			goto done;
+		}
+
+		if (peer->memc.points) {
+			ngx_pfree(c->pool, peer->memc.points);
+		}
+
+		for (q = ngx_queue_head(&peer->memc.servers);
+			q != ngx_queue_sentinel(&peer->memc.servers);
+			q = ngx_queue_next(q)) {
+			num++;
+		}
+
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session cache have %d memcached servers", num);
+
+		peer->memc.npoints = 0;
+		peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_t) * CHASH_NPOINTS * num);
+		if (!peer->memc.points) {
+			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
+			goto done;
+		}
+
+		for (q = ngx_queue_head(&peer->memc.servers);
+			q != ngx_queue_sentinel(&peer->memc.servers);
+			q = ngx_queue_next(q)) {
+			server = ngx_queue_data(q, memc_server_st, queue);
+
+			switch (server->addr.sa_family) {
+#if NGX_HAVE_INET6
+				case AF_INET6:
+					s_addr = &server->sin6.sin6_addr.s6_addr[0];
+					port = ntohs(server->sin6.sin6_port);
+					break;
+#endif /* NGX_HAVE_INET6 */
+				default: /* AF_INET */
+					s_addr = &server->sin6.sin6_addr.s6_addr[0];
+					port = ntohs(server->sin.sin_port);
+					break;
+			}
 
 			ngx_crc32_init(base_hash);
 			ngx_crc32_update(&base_hash, str_addr, ngx_inet_ntop(server->addr.sa_family, s_addr, str_addr, NGX_SOCKADDR_STRLEN));
@@ -1165,16 +1210,22 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 		}
 
-		if (add_member) {
-			ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t), chash_cmp_points);
+		ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t), chash_cmp_points);
 
-			for (i = 0, j = 1; j < peer->memc.npoints; j++) {
-				if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
-					peer->memc.points[++i] = peer->memc.points[j];
-				}
+		for (i = 0, j = 1; j < peer->memc.npoints; j++) {
+			if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
+				peer->memc.points[++i] = peer->memc.points[j];
 			}
+		}
 
-			peer->memc.npoints = i + 1;
+		peer->memc.npoints = i + 1;
+
+		if (ngx_queue_empty(&peer->memc.servers)) {
+			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
+
+			ngx_log_error(NGX_LOG_INFO, c->log, 0, "no memcached servers known, session cache support disabled");
+		} else {
+			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
 		}
 	} else {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number: %x", seq.via.u64);
