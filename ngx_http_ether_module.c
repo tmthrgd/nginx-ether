@@ -146,6 +146,8 @@ static void memc_write_handler(ngx_event_t *wev);
 
 static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value);
 static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value);
+static void memc_cleanup_operation(memc_op_st *op);
+static void memc_cleanup_pool_handler(void *data);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
 
@@ -1575,6 +1577,7 @@ static void memc_read_handler(ngx_event_t *rev)
 		ngx_post_event(op->ev, &ngx_posted_events);
 	} else {
 		(void) memc_complete_operation(op, NULL);
+		memc_cleanup_operation(op);
 	}
 }
 
@@ -1815,7 +1818,6 @@ error:
 
 static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
 {
-	ngx_int_t rc;
 	ngx_str_t data;
 	unsigned short key_len, status;
 	unsigned int body_len;
@@ -1832,23 +1834,20 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
 	// op->recv.pos[6..7] = reserved
 
 	if (op->recv.pos[4] != 0 || op->recv.pos[5] != 1) {
-		rc = NGX_ERROR;
-		goto cleanup;
+		return NGX_ERROR;
 	}
 
 	res_hdr = (protocol_binary_response_header *)&op->recv.pos[8];
 
 	if (res_hdr->response.magic != PROTOCOL_BINARY_RES || res_hdr->response.opcode != op->cmd) {
-		rc = NGX_ERROR;
-		goto cleanup;
+		return NGX_ERROR;
 	}
 
 	key_len = htons(res_hdr->response.keylen);
 	body_len = htonl(res_hdr->response.bodylen);
 
 	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header) + body_len) {
-		rc = NGX_ERROR;
-		goto cleanup;
+		return NGX_ERROR;
 	}
 
 	data.data = op->recv.pos + 8
@@ -1866,39 +1865,50 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value)
 			*value = data;
 		}
 
-		rc = NGX_OK;
-	} else {
-		log_level = NGX_LOG_ERR;
-
-		switch (op->cmd) {
-			case PROTOCOL_BINARY_CMD_GET:
-				if (status == PROTOCOL_BINARY_RESPONSE_KEY_ENOENT) {
-					log_level = NGX_LOG_DEBUG;
-				}
-
-				break;
-			default:
-				break;
-		}
-
-		ngx_log_error(log_level, op->c->log, 0, "memcached error %hd: %*s", status, data.len, data.data);
-
-		rc = NGX_ERROR;
+		return NGX_OK;
 	}
 
-cleanup:
+	log_level = NGX_LOG_ERR;
+
+	switch (op->cmd) {
+		case PROTOCOL_BINARY_CMD_GET:
+			if (status == PROTOCOL_BINARY_RESPONSE_KEY_ENOENT) {
+				log_level = NGX_LOG_DEBUG;
+			}
+
+			break;
+		default:
+			break;
+	}
+
+	ngx_log_error(log_level, op->c->log, 0, "memcached error %hd: %*s", status, data.len, data.data);
+
+	return NGX_ERROR;
+}
+
+static void memc_cleanup_operation(memc_op_st *op)
+{
 	ngx_close_connection(op->c);
 
 	op->c->write->handler = NULL;
 	op->c->read->handler = NULL;
 
-	if (rc == NGX_ERROR) {
+	if (op->send.start) {
+		ngx_pfree(op->c->pool, op->send.start);
+	}
+
+	if (op->recv.start) {
 		ngx_pfree(op->c->pool, op->recv.start);
 	}
 
 	ngx_pfree(op->c->pool, op);
+}
 
-	return rc;
+static void memc_cleanup_pool_handler(void *data)
+{
+	memc_op_st *op = data;
+
+	memc_cleanup_operation(op);
 }
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
@@ -1953,6 +1963,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ngx_str_t key, value;
 	ngx_connection_t *c;
 	ngx_int_t rc;
+	ngx_pool_cleanup_t *cln;
 #if MEMC_KEYS_ARE_HEX
 	u_char hex[128];
 
@@ -2000,8 +2011,20 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	op->ev = c->write;
 
 	if (!SSL_set_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index, op)) {
+		memc_cleanup_operation(op);
+
 		return NULL;
 	}
+
+	cln = ngx_pool_cleanup_add(c->pool, 0);
+	if (!cln) {
+		memc_cleanup_operation(op);
+
+		return NULL;
+	}
+
+	cln->handler = memc_cleanup_pool_handler;
+	cln->data = op;
 
 	return SSL_magic_pending_session_ptr();
 }
