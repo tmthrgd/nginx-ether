@@ -1061,7 +1061,7 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 
-next_key:
+		next_key:
 			if (ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				peer->default_ticket_key = key;
 
@@ -1320,7 +1320,7 @@ next_key:
 			/* add_member */
 			server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
 
-update_member:
+		update_member:
 			switch (addr.via.bin.size) {
 				case 4:
 					server->sin.sin_family = AF_INET;
@@ -1784,6 +1784,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			ngx_hex_dump(buf, name, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 		return 0;
+
 	found:
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
