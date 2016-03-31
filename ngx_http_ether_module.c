@@ -455,7 +455,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
 
 		if (ssl->session_timeout > REALTIME_MAXDELTA) {
-			ngx_log_error(NGX_LOG_INFO, cf->log, 0,
+			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 				"session_timeout cannot be greater than %d seconds, was %d seconds",
 				REALTIME_MAXDELTA, ssl->session_timeout);
 
@@ -475,14 +475,16 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 	field = (ngx_str_t *)(p + cmd->offset);
 	if (field->data) {
-		return "is duplicate";
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "is duplicate");
+		return NGX_CONF_ERROR;
 	}
 
 	value = cf->args->elts;
 
 	if (cf->args->nelts == 3) {
 		if (ngx_strcmp(value[2].data, "env") != 0) {
-			return "only env flag supported";
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "only env flag supported");
+			return NGX_CONF_ERROR;
 		}
 
 		field->data = (u_char *)getenv((const char *)value[1].data);
