@@ -14,7 +14,8 @@
 
 #define RETRIEVE_KEYS_QUERY "retrieve-keys"
 
-#define STREAM_KEY_EVENTS ("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
+#define STREAM_KEY_EVENTS \
+	("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
 
 #define MEMC_SERVER_TAG_KEY "role"
 #define MEMC_SERVER_TAG_VAL "memc"
@@ -26,7 +27,8 @@
 #define MEMBER_FAILED_EVENT "member-failed"
 #define MEMBER_UPDATE_EVENT "member-update"
 
-#define STREAM_MEMBER_EVENTS (MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT)
+#define STREAM_MEMBER_EVENTS \
+	(MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT)
 
 #define CHASH_NPOINTS 160
 
@@ -154,7 +156,8 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
 
-static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size, ngx_log_t *log);
+static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
+		ngx_log_t *log);
 static char *ether_msgpack_parse_map(msgpack_object *obj, ...);
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
@@ -163,15 +166,18 @@ static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uin
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, void *data);
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd,
+		ngx_str_t *key, ngx_str_t *value, void *data);
 static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
 static void memc_cleanup_pool_handler(void *data);
 
-static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
+static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
+		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
-static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len, int *copy);
+static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
+		int *copy);
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
 
 static ngx_array_t peers = {0};
@@ -339,128 +345,129 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		return NGX_CONF_ERROR;
 	}
 
-	if (conf->serf_address.len) {
-		if (ngx_strcmp(conf->serf_address.data, "off") == 0) {
-			return NGX_CONF_OK;
-		}
+	if (!conf->serf_address.len || ngx_strcmp(conf->serf_address.data, "off") == 0) {
+		return NGX_CONF_OK;
+	}
 
-		if (!ssl->session_tickets) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_tickets being enabled");
+	if (!ssl->session_tickets) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+			"ether cannot be used without ssl_session_tickets being enabled");
+		return NGX_CONF_ERROR;
+	}
+
+	if (ssl->session_ticket_keys) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+			"ether cannot be used alongside the ssl_session_ticket_key directive");
+		return NGX_CONF_ERROR;
+	}
+
+	if (ssl->builtin_session_cache != NGX_SSL_NONE_SCACHE) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+			"ether cannot be used without ssl_session_cache being unset (none)");
+		return NGX_CONF_ERROR;
+	}
+
+	if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
+		ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
+	}
+
+	ngx_memzero(&u, sizeof(ngx_url_t));
+
+	u.url.len = conf->serf_address.len;
+	u.url.data = conf->serf_address.data;
+	u.default_port = 7373;
+	u.no_resolve = 1;
+
+	if (ngx_parse_url(cf->pool, &u) != NGX_OK || !u.addrs || !u.addrs[0].sockaddr) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "invalid url given in ether directive");
+		return NGX_CONF_ERROR;
+	}
+
+	if (!peers.elts) {
+		if (ngx_array_init(&peers, cf->cycle->pool, 16, sizeof(peer_st)) != NGX_OK) {
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ngx_array_init failed");
 			return NGX_CONF_ERROR;
 		}
+	}
 
-		if (ssl->session_ticket_keys) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used alongside the ssl_session_ticket_key directive");
-			return NGX_CONF_ERROR;
-		}
+	peer = ngx_array_push(&peers);
+	if (!peer) {
+		return NGX_CONF_ERROR;
+	}
 
-		if (ssl->builtin_session_cache != NGX_SSL_NONE_SCACHE) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether cannot be used without ssl_session_cache being unset (none)");
-			return NGX_CONF_ERROR;
-		}
+	ngx_memzero(peer, sizeof(peer_st));
 
-		if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
-			ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
-		}
+	peer->serf.auth.data = conf->serf_auth.data;
+	peer->serf.auth.len = conf->serf_auth.len;
 
-		ngx_memzero(&u, sizeof(ngx_url_t));
+	ngx_queue_init(&peer->memc.servers);
 
-		u.url.len = conf->serf_address.len;
-		u.url.data = conf->serf_address.data;
-		u.default_port = 7373;
-		u.no_resolve = 1;
+	if (conf->timeout != NGX_CONF_UNSET_MSEC) {
+		peer->timeout = conf->timeout;
+	}
 
-		if (ngx_parse_url(cf->pool, &u) != NGX_OK || !u.addrs || !u.addrs[0].sockaddr) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "invalid url given in ether directive");
-			return NGX_CONF_ERROR;
-		}
+	peer->pool = cf->cycle->pool;
+	peer->log = cf->cycle->log;
 
-		if (!peers.elts) {
-			if (ngx_array_init(&peers, cf->cycle->pool, 16, sizeof(peer_st)) != NGX_OK) {
-				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ngx_array_init failed");
-				return NGX_CONF_ERROR;
-			}
-		}
+	peer->ssl = ssl;
 
-		peer = ngx_array_push(&peers);
-		if (!peer) {
-			return NGX_CONF_ERROR;
-		}
+	ngx_queue_init(&peer->ticket_keys);
 
-		ngx_memzero(peer, sizeof(peer_st));
+	pc = &peer->serf.pc;
 
-		peer->serf.auth.data = conf->serf_auth.data;
-		peer->serf.auth.len = conf->serf_auth.len;
+	pc->sockaddr = u.addrs[0].sockaddr;
+	pc->socklen = u.addrs[0].socklen;
+	pc->name = &conf->serf_address;
 
-		ngx_queue_init(&peer->memc.servers);
+	pc->get = ngx_event_get_peer;
+	pc->log = cf->log;
+	pc->log_error = NGX_ERROR_ERR;
 
-		if (conf->timeout != NGX_CONF_UNSET_MSEC) {
-			peer->timeout = conf->timeout;
-		}
+	peer->serf.state = HANDSHAKING;
 
-		peer->pool = cf->cycle->pool;
-		peer->log = cf->cycle->log;
-
-		peer->ssl = ssl;
-
-		ngx_queue_init(&peer->ticket_keys);
-
-		pc = &peer->serf.pc;
-
-		pc->sockaddr = u.addrs[0].sockaddr;
-		pc->socklen = u.addrs[0].socklen;
-		pc->name = &conf->serf_address;
-
-		pc->get = ngx_event_get_peer;
-		pc->log = cf->log;
-		pc->log_error = NGX_ERROR_ERR;
-
-		peer->serf.state = HANDSHAKING;
-
+	if (g_ssl_ctx_exdata_peer_index == -1) {
+		g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 		if (g_ssl_ctx_exdata_peer_index == -1) {
-			g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-			if (g_ssl_ctx_exdata_peer_index == -1) {
-				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_get_ex_new_index failed");
-				return NGX_CONF_ERROR;
-			}
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_get_ex_new_index failed");
+			return NGX_CONF_ERROR;
 		}
+	}
 
+	if (g_ssl_exdata_memc_op_index == -1) {
+		g_ssl_exdata_memc_op_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 		if (g_ssl_exdata_memc_op_index == -1) {
-			g_ssl_exdata_memc_op_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-			if (g_ssl_exdata_memc_op_index == -1) {
-				ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_get_ex_new_index failed");
-				return NGX_CONF_ERROR;
-			}
-		}
-
-		if (!SSL_CTX_set_ex_data(ssl->ssl.ctx, g_ssl_ctx_exdata_peer_index, peer)) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_set_ex_data failed");
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_get_ex_new_index failed");
 			return NGX_CONF_ERROR;
 		}
+	}
 
-		SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
+	if (!SSL_CTX_set_ex_data(ssl->ssl.ctx, g_ssl_ctx_exdata_peer_index, peer)) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_CTX_set_ex_data failed");
+		return NGX_CONF_ERROR;
+	}
 
-		if (!SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler)) {
-			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-				"nginx was built with Session Tickets support, however, "
-				"now it is linked dynamically to an OpenSSL library "
-				"which has no tlsext support");
-			return NGX_CONF_ERROR;
-		}
+	SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-		SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
+	if (!SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler)) {
+		ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+			"nginx was built with Session Tickets support, however, "
+			"now it is linked dynamically to an OpenSSL library "
+			"which has no tlsext support");
+		return NGX_CONF_ERROR;
+	}
 
-		SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
-		SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
-		SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
+	SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
-		if (ssl->session_timeout > REALTIME_MAXDELTA) {
-			ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-				"session_timeout cannot be greater than %d seconds, was %d seconds",
-				REALTIME_MAXDELTA, ssl->session_timeout);
+	SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
+	SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
+	SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
 
-			ssl->session_timeout = REALTIME_MAXDELTA;
-		}
+	if (ssl->session_timeout > REALTIME_MAXDELTA) {
+		ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+			"session_timeout cannot be greater than %d seconds, was %d seconds",
+			REALTIME_MAXDELTA, ssl->session_timeout);
+
+		ssl->session_timeout = REALTIME_MAXDELTA;
 	}
 
 	return NGX_CONF_OK;
@@ -503,7 +510,8 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	return NGX_CONF_OK;
 }
 
-static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size, ngx_log_t *log)
+static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
+		ngx_log_t *log)
 {
 	size_t off = 0;
 	msgpack_unpack_return ret;
@@ -511,7 +519,8 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 	ret = msgpack_unpack_next(und, (char *)recv->pos, recv->last - recv->pos, &off);
 	switch (ret) {
 		case MSGPACK_UNPACK_EXTRA_BYTES:
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next succeeded but left trailing bytes");
+			ngx_log_error(NGX_LOG_ERR, log, 0,
+				"msgpack_unpack_next succeeded but left trailing bytes");
 		case MSGPACK_UNPACK_SUCCESS:
 			recv->pos += off;
 			return NGX_OK;
@@ -527,10 +536,12 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 				recv->last = recv->start;
 			}
 
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with unexpected eof");
+			ngx_log_error(NGX_LOG_ERR, log, 0,
+				"msgpack_unpack_next failed with unexpected eof");
 			return NGX_AGAIN;
 		case MSGPACK_UNPACK_NOMEM_ERROR:
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with nomem error");
+			ngx_log_error(NGX_LOG_ERR, log, 0,
+				"msgpack_unpack_next failed with nomem error");
 			return NGX_ABORT;
 		default: /* MSGPACK_UNPACK_PARSE_ERROR */
 			recv->pos += off;
@@ -540,7 +551,8 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 				recv->last = recv->start;
 			}
 
-			ngx_log_error(NGX_LOG_ERR, log, 0, "msgpack_unpack_next failed with parse error");
+			ngx_log_error(NGX_LOG_ERR, log, 0,
+				"msgpack_unpack_next failed with parse error");
 			return NGX_ERROR;
 	}
 }
@@ -613,7 +625,8 @@ static void serf_read_handler(ngx_event_t *rev)
 	peer_st *peer;
 	ssize_t size, n;
 	msgpack_unpacked und;
-	msgpack_object *ptr, seq, error, event, name, payload = {0}, members, addr, tags, status, type, default_key, keys;
+	msgpack_object *ptr, seq, error, event, name, payload = {0}, members, addr, tags, status,
+		type, default_key, keys;
 	msgpack_object_kv *ptr_kv;
 	msgpack_object_str *str;
 	void *hdr_start;
@@ -646,7 +659,8 @@ static void serf_read_handler(ngx_event_t *rev)
 		/* 1/4 of the page_size, is it enough? */
 		peer->serf.recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
 		if (!peer->serf.recv.start) {
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated recv buffer");
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"ngx_palloc failed to allocated recv buffer");
 			return;
 		}
 
@@ -664,7 +678,8 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			new_buf = ngx_palloc(c->pool, size * 2);
 			if (!new_buf) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated new recv buffer");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"ngx_palloc failed to allocated new recv buffer");
 				return;
 			}
 
@@ -716,12 +731,14 @@ static void serf_read_handler(ngx_event_t *rev)
 	}
 
 	if (error.via.str.size) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "ether RPC error: %*s", error.via.str.size, error.via.str.ptr);
+		ngx_log_error(NGX_LOG_ERR, c->log, 0, "ether RPC error: %*s",
+			error.via.str.size, error.via.str.ptr);
 		goto done;
 	}
 
 	if (!seq.via.u64) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response header, invalid sequence number");
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"malformed RPC response header, invalid sequence number");
 		goto done;
 	}
 
@@ -789,7 +806,10 @@ static void serf_read_handler(ngx_event_t *rev)
 		name.type = MSGPACK_OBJECT_STR;
 		payload.type = MSGPACK_OBJECT_BIN;
 
-		err = ether_msgpack_parse_map(&und.data, "Event", &event, "Name", &name, "Payload", &payload, "LTime", NULL, "Coalesce", NULL, NULL);
+		err = ether_msgpack_parse_map(&und.data,
+			"Event", &event, "Name", &name, "Payload", &payload,
+			"LTime", NULL, "Coalesce", NULL,
+			NULL);
 		if (err) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 			goto done;
@@ -807,18 +827,19 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 				"ssl session ticket key install: \"%*s\"",
-				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr,
+					SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
-			if (!ngx_queue_empty(&peer->ticket_keys)) {
-				for (q = ngx_queue_head(&peer->ticket_keys);
-					q != ngx_queue_sentinel(&peer->ticket_keys);
-					q = ngx_queue_next(q)) {
-					key = ngx_queue_data(q, key_st, queue);
+			for (q = ngx_queue_head(&peer->ticket_keys);
+				q != ngx_queue_sentinel(&peer->ticket_keys);
+				q = ngx_queue_next(q)) {
+				key = ngx_queue_data(q, key_st, queue);
 
-					if (ngx_memcmp(payload.via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, INSTALL_KEY_EVENT " event: already have key");
-						goto done;
-					}
+				if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
+						SSL_TICKET_KEY_NAME_LEN) == 0) {
+					ngx_log_error(NGX_LOG_ERR, c->log, 0,
+						INSTALL_KEY_EVENT " event: already have key");
+					goto done;
 				}
 			}
 
@@ -828,12 +849,16 @@ static void serf_read_handler(ngx_event_t *rev)
 				goto done;
 			}
 
-			ngx_memcpy(key->key.name, payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-			ngx_memcpy(key->key.aes_key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
-			ngx_memcpy(key->key.hmac_key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+			ngx_memcpy(key->key.name,
+				payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
+			ngx_memcpy(key->key.aes_key,
+				payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
+			ngx_memcpy(key->key.hmac_key,
+				payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
 
 			ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
-		} else if (ngx_strncmp(name.via.str.ptr, REMOVE_KEY_EVENT, name.via.str.size) == 0) {
+		} else if (ngx_strncmp(name.via.str.ptr, REMOVE_KEY_EVENT,
+				name.via.str.size) == 0) {
 			if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 				goto done;
@@ -841,18 +866,16 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 				"ssl session ticket key removal: \"%*s\"",
-				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
-
-			if (ngx_queue_empty(&peer->ticket_keys)) {
-				goto done;
-			}
+				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr,
+					SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 			for (q = ngx_queue_head(&peer->ticket_keys);
 				q != ngx_queue_sentinel(&peer->ticket_keys);
 				q = ngx_queue_next(q)) {
 				key = ngx_queue_data(q, key_st, queue);
 
-				if (ngx_memcmp(payload.via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) != 0) {
+				if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
+					SSL_TICKET_KEY_NAME_LEN) != 0) {
 					continue;
 				}
 
@@ -863,14 +886,17 @@ static void serf_read_handler(ngx_event_t *rev)
 
 					SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, REMOVE_KEY_EVENT " event: on default key, session ticket support disabled");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0,
+						REMOVE_KEY_EVENT " event: "
+						"on default key, session ticket support disabled");
 				}
 
 				ngx_memzero(&key->key, sizeof(key->key));
 				ngx_pfree(c->pool, key); // is this the right pool?
 				break;
 			}
-		} else if (ngx_strncmp(name.via.str.ptr, SET_DEFAULT_KEY_EVENT, name.via.str.size) == 0) {
+		} else if (ngx_strncmp(name.via.str.ptr, SET_DEFAULT_KEY_EVENT,
+				name.via.str.size) == 0) {
 			if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 				goto done;
@@ -878,10 +904,12 @@ static void serf_read_handler(ngx_event_t *rev)
 
 			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 				"ssl session ticket key set default: \"%*s\"",
-				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+				ngx_hex_dump(buf, (u_char *)payload.via.bin.ptr,
+					SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 			if (ngx_queue_empty(&peer->ticket_keys)) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: without any keys");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					SET_DEFAULT_KEY_EVENT " event: without any keys");
 				goto done;
 			}
 
@@ -895,7 +923,8 @@ static void serf_read_handler(ngx_event_t *rev)
 				q = ngx_queue_next(q)) {
 				key = ngx_queue_data(q, key_st, queue);
 
-				if (ngx_memcmp(payload.via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+				if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
+						SSL_TICKET_KEY_NAME_LEN) == 0) {
 					key->was_default = 0;
 					peer->default_ticket_key = key;
 
@@ -907,11 +936,15 @@ static void serf_read_handler(ngx_event_t *rev)
 			if (!peer->default_ticket_key) {
 				SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, SET_DEFAULT_KEY_EVENT " event: on unknown key, session ticket support disabled");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					SET_DEFAULT_KEY_EVENT " event: "
+					"on unknown key, session ticket support disabled");
 				goto done;
 			}
 		} else {
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", name.via.str.size, name.via.str.ptr);
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"received unrecognised event from serf: %*s",
+				name.via.str.size, name.via.str.ptr);
 			goto done;
 		}
 
@@ -922,7 +955,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			num++;
 		}
 
-		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
+			"ssl session ticket key have %d keys", num);
 #endif
 	} else if (seq.via.u64 == peer->serf.seq.key_query) {
 		// {"Seq": 0, "Error": ""}
@@ -1001,7 +1035,9 @@ static void serf_read_handler(ngx_event_t *rev)
 		default_key.type = MSGPACK_OBJECT_BIN;
 		keys.type = MSGPACK_OBJECT_ARRAY;
 
-		err = ether_msgpack_parse_map(&und.data, "Default", &default_key, "Keys", &keys, NULL);
+		err = ether_msgpack_parse_map(&und.data,
+			"Default", &default_key, "Keys", &keys,
+			NULL);
 		if (err) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 			goto done;
@@ -1014,7 +1050,8 @@ static void serf_read_handler(ngx_event_t *rev)
 
 		ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket key set default: \"%*s\"",
-			ngx_hex_dump(buf, (u_char *)default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+			ngx_hex_dump(buf, (u_char *)default_key.via.bin.ptr,
+				SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 		if (peer->default_ticket_key) {
 			peer->default_ticket_key->was_default = 1;
@@ -1025,29 +1062,32 @@ static void serf_read_handler(ngx_event_t *rev)
 			ptr = &keys.via.array.ptr[i];
 
 			if (ptr->type != MSGPACK_OBJECT_BIN) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, wrong type given");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"malformed RPC response, wrong type given");
 				goto done;
 			}
 
 			if (ptr->via.bin.size != SSL_TICKET_KEY_NAME_LEN + 32) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid ssl session ticket key size");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"invalid ssl session ticket key size");
 				goto done;
 			}
 
 			ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
 				"ssl session ticket key install: \"%*s\"",
-				ngx_hex_dump(buf, (u_char *)ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+				ngx_hex_dump(buf, (u_char *)ptr->via.bin.ptr,
+					SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
-			if (!ngx_queue_empty(&peer->ticket_keys)) {
-				for (q = ngx_queue_head(&peer->ticket_keys);
-					q != ngx_queue_sentinel(&peer->ticket_keys);
-					q = ngx_queue_next(q)) {
-					key = ngx_queue_data(q, key_st, queue);
+			for (q = ngx_queue_head(&peer->ticket_keys);
+				q != ngx_queue_sentinel(&peer->ticket_keys);
+				q = ngx_queue_next(q)) {
+				key = ngx_queue_data(q, key_st, queue);
 
-					if (ngx_memcmp(ptr->via.bin.ptr, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-						ngx_log_error(NGX_LOG_INFO, c->log, 0, RETRIEVE_KEYS_QUERY " query: already have key");
-						goto next_key;
-					}
+				if (ngx_memcmp(ptr->via.bin.ptr, key->key.name,
+						SSL_TICKET_KEY_NAME_LEN) == 0) {
+					ngx_log_error(NGX_LOG_INFO, c->log, 0,
+						RETRIEVE_KEYS_QUERY " query: already have key");
+					goto is_default_key;
 				}
 			}
 
@@ -1057,26 +1097,30 @@ static void serf_read_handler(ngx_event_t *rev)
 				goto done;
 			}
 
-			ngx_memcpy(key->key.name, ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-			ngx_memcpy(key->key.aes_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
-			ngx_memcpy(key->key.hmac_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+			ngx_memcpy(key->key.name,
+				ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
+			ngx_memcpy(key->key.aes_key,
+				ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
+			ngx_memcpy(key->key.hmac_key,
+				ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
 
 			ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 
-		next_key:
-			if (ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) == 0) {
+		is_default_key:
+			if (ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr,
+					SSL_TICKET_KEY_NAME_LEN) == 0) {
 				peer->default_ticket_key = key;
 
 				SSL_CTX_clear_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 			}
-
-			continue;
 		}
 
 		if (!peer->default_ticket_key) {
 			SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, RETRIEVE_KEYS_QUERY " query: no valid default key given, session ticket support disabled");
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				RETRIEVE_KEYS_QUERY " query: "
+				"no valid default key given, session ticket support disabled");
 		}
 
 #if NGX_DEBUG
@@ -1086,7 +1130,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			num++;
 		}
 
-		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
+			"ssl session ticket key have %d keys", num);
 #endif
 	} else if (seq.via.u64 == peer->serf.seq.member_ev || seq.via.u64 == peer->serf.seq.list) {
 		// seq.via.u64 == peer->serf.seq.member_ev
@@ -1137,14 +1182,16 @@ static void serf_read_handler(ngx_event_t *rev)
 		// 	...]
 		// }
 
-		if (seq.via.u64 == peer->serf.seq.member_ev && peer->serf.state == STREAM_MEMBER_EVSUB) {
+		if (seq.via.u64 == peer->serf.seq.member_ev
+			&& peer->serf.state == STREAM_MEMBER_EVSUB) {
 			peer->serf.state = LISTING_MEMBERS;
 
 			c->write->handler = serf_write_handler;
 			goto done;
 		}
 
-		if (seq.via.u64 == peer->serf.seq.list && peer->serf.state == LISTING_MEMBERS) {
+		if (seq.via.u64 == peer->serf.seq.list
+			&& peer->serf.state == LISTING_MEMBERS) {
 			peer->serf.state = WAITING;
 		}
 
@@ -1183,21 +1230,29 @@ static void serf_read_handler(ngx_event_t *rev)
 			event.type = MSGPACK_OBJECT_STR;
 			members.type = MSGPACK_OBJECT_ARRAY;
 
-			err = ether_msgpack_parse_map(&und.data, "Event", &event, "Members", &members, NULL);
+			err = ether_msgpack_parse_map(&und.data,
+				"Event", &event, "Members", &members,
+				NULL);
 			if (err) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 				goto done;
 			}
 
-			if (ngx_strncmp(event.via.str.ptr, MEMBER_JOIN_EVENT, event.via.str.size) == 0) {
+			if (ngx_strncmp(event.via.str.ptr, MEMBER_JOIN_EVENT,
+					event.via.str.size) == 0) {
 				add_member = 1;
-			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_LEAVE_EVENT, event.via.str.size) == 0
-				|| ngx_strncmp(event.via.str.ptr, MEMBER_FAILED_EVENT, event.via.str.size) == 0) {
+			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_LEAVE_EVENT,
+					event.via.str.size) == 0
+				|| ngx_strncmp(event.via.str.ptr, MEMBER_FAILED_EVENT,
+					event.via.str.size) == 0) {
 				remove_member = 1;
-			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_UPDATE_EVENT, event.via.str.size) == 0) {
+			} else if (ngx_strncmp(event.via.str.ptr, MEMBER_UPDATE_EVENT,
+					event.via.str.size) == 0) {
 				update_member = 1;
 			} else {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "received unrecognised event from serf: %*s", event.via.str.size, event.via.str.ptr);
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"received unrecognised event from serf: %*s",
+					event.via.str.size, event.via.str.ptr);
 				goto done;
 			}
 		}
@@ -1240,29 +1295,36 @@ static void serf_read_handler(ngx_event_t *rev)
 				ptr_kv = &tags.via.map.ptr[j];
 
 				if (ptr_kv->key.type != MSGPACK_OBJECT_STR) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect key to be string");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0,
+						"malformed RPC response, expect key to be string");
 					goto done;
 				}
 
 				str = &ptr_kv->key.via.str;
-				if (skip_member && ngx_strncmp(str->ptr, MEMC_SERVER_TAG_KEY, str->size) == 0) {
+				if (skip_member && ngx_strncmp(str->ptr, MEMC_SERVER_TAG_KEY,
+						str->size) == 0) {
 					if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect value to be string");
+						ngx_log_error(NGX_LOG_ERR, c->log, 0,
+							"malformed RPC response, "
+							"expect value to be string");
 						goto done;
 					}
 
 					str = &ptr_kv->val.via.str;
-					if (ngx_strncmp(str->ptr, MEMC_SERVER_TAG_VAL, str->size) == 0) {
-						skip_member = 0;
-						continue;
+					if (ngx_strncmp(str->ptr, MEMC_SERVER_TAG_VAL,
+							str->size) != 0) {
+						break;
 					}
 
-					break;
+					skip_member = 0;
+					continue;
 				}
 
 				if (ngx_strncmp(str->ptr, MEMC_PORT_TAG_KEY, str->size) == 0) {
 					if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect value to be string");
+						ngx_log_error(NGX_LOG_ERR, c->log, 0,
+							"malformed RPC response, "
+							"expect value to be string");
 						goto done;
 					}
 
@@ -1270,7 +1332,10 @@ static void serf_read_handler(ngx_event_t *rev)
 
 					rc = ngx_atoi((u_char *)str->ptr, str->size);
 					if (rc == NGX_ERROR) {
-						ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect " MEMC_PORT_TAG_KEY " tag to be valid number");
+						ngx_log_error(NGX_LOG_ERR, c->log, 0,
+							"malformed RPC response, "
+							"expect " MEMC_PORT_TAG_KEY " tag to be "
+							"a valid number");
 
 						skip_member = 1;
 						break;
@@ -1287,7 +1352,9 @@ static void serf_read_handler(ngx_event_t *rev)
 					q = ngx_queue_next(q)) {
 					server = ngx_queue_data(q, memc_server_st, queue);
 
-					if (server->name.len != name.via.str.size || ngx_memcmp(name.via.str.ptr, server->name.data, server->name.len) != 0) {
+					if (server->name.len != name.via.str.size
+						|| ngx_memcmp(name.via.str.ptr, server->name.data,
+							server->name.len) != 0) {
 						continue;
 					}
 
@@ -1311,7 +1378,9 @@ static void serf_read_handler(ngx_event_t *rev)
 					q = ngx_queue_next(q)) {
 					server = ngx_queue_data(q, memc_server_st, queue);
 
-					if (server->name.len == name.via.str.size && ngx_memcmp(name.via.str.ptr, server->name.data, server->name.len) == 0) {
+					if (server->name.len == name.via.str.size
+						&& ngx_memcmp(name.via.str.ptr, server->name.data,
+							server->name.len) == 0) {
 						goto update_member;
 					}
 				}
@@ -1323,6 +1392,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
 
 		update_member:
+			have_changed = 1;
+
 			switch (addr.via.bin.size) {
 				case 4:
 					server->sin.sin_family = AF_INET;
@@ -1341,27 +1412,31 @@ static void serf_read_handler(ngx_event_t *rev)
 					break;
 #else /* NGX_HAVE_INET6 */
 				case 16:
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "member has IPv6 address but nginx built without IPv6 support, skipping member");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0,
+						"member has IPv6 address but nginx built without "
+						"IPv6 support, skipping member");
 					continue;
 #endif /* NGX_HAVE_INET6 */
 				default:
-					ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, expect Addr to be an array of length 4 or 16");
+					ngx_log_error(NGX_LOG_ERR, c->log, 0,
+						"malformed RPC response, expect Addr to be "
+						"an array of length 4 or 16");
 					goto done;
 			}
 
 			ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
 
-			if (add_member) {
-				server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
-				server->name.len = name.via.str.size;
-
-				ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
-				server->name.data[server->name.len] = '\0';
-
-				ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
+			if (!add_member) {
+				continue;
 			}
 
-			have_changed = 1;
+			server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
+			server->name.len = name.via.str.size;
+
+			ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
+			server->name.data[server->name.len] = '\0';
+
+			ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
 		}
 
 		if (!have_changed) {
@@ -1378,7 +1453,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			num++;
 		}
 
-		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session cache have %d memcached servers", num);
+		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
+			"ssl session cache have %d memcached servers", num);
 
 		peer->memc.npoints = 0;
 		peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_t) * CHASH_NPOINTS * num);
@@ -1406,13 +1482,16 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 
 			ngx_crc32_init(base_hash);
-			ngx_crc32_update(&base_hash, str_addr, ngx_inet_ntop(server->addr.sa_family, s_addr, str_addr, NGX_SOCKADDR_STRLEN));
+			ngx_crc32_update(&base_hash, str_addr,
+				ngx_inet_ntop(server->addr.sa_family, s_addr, str_addr,
+					NGX_SOCKADDR_STRLEN));
 			ngx_crc32_update(&base_hash, (u_char *)"", 1);
 
 			if (port == 11211) {
 				ngx_crc32_update(&base_hash, (u_char *)"11211", strlen("11211") - 1);
 			} else {
-				ngx_crc32_update(&base_hash, str_port, snprintf((char *)str_port, sizeof("65535") - 1, "%hu", port));
+				ngx_crc32_update(&base_hash, str_port,
+					snprintf((char *)str_port, sizeof("65535") - 1, "%hu", port));
 			}
 
 			prev_hash.value = 0;
@@ -1438,7 +1517,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 		}
 
-		ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t), chash_cmp_points);
+		ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t),
+			chash_cmp_points);
 
 		for (i = 0, j = 1; j < peer->memc.npoints; j++) {
 			if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
@@ -1451,12 +1531,15 @@ static void serf_read_handler(ngx_event_t *rev)
 		if (ngx_queue_empty(&peer->memc.servers)) {
 			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
-			ngx_log_error(NGX_LOG_INFO, c->log, 0, "no memcached servers known, session cache support disabled");
+			ngx_log_error(NGX_LOG_INFO, c->log, 0,
+				"no memcached servers known, session cache support disabled");
 		} else {
-			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
+			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx,
+				SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
 		}
 	} else {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unrecognised RPC seq number: %x", seq.via.u64);
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"unrecognised RPC seq number: %x", seq.via.u64);
 	}
 
 done:
@@ -1497,7 +1580,8 @@ static void serf_write_handler(ngx_event_t *wev)
 
 		switch (peer->serf.state) {
 			case WAITING:
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "write_handler called in WAITING state");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"write_handler called in WAITING state");
 				return;
 			case HANDSHAKING:
 				peer->serf.seq.handshake = seq;
@@ -1548,7 +1632,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, sizeof("AuthKey") - 1);
 				msgpack_pack_str_body(pk, "AuthKey", sizeof("AuthKey") - 1);
 				msgpack_pack_str(pk, peer->serf.auth.len);
-				msgpack_pack_str_body(pk, peer->serf.auth.data, peer->serf.auth.len);
+				msgpack_pack_str_body(pk, peer->serf.auth.data,
+					peer->serf.auth.len);
 				break;
 			case STREAM_KEY_EVSUB:
 				peer->serf.seq.key_ev = seq;
@@ -1574,7 +1659,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, sizeof("Type") - 1);
 				msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
 				msgpack_pack_str(pk, sizeof(STREAM_KEY_EVENTS) - 1);
-				msgpack_pack_str_body(pk, STREAM_KEY_EVENTS, sizeof(STREAM_KEY_EVENTS) - 1);
+				msgpack_pack_str_body(pk, STREAM_KEY_EVENTS,
+					sizeof(STREAM_KEY_EVENTS) - 1);
 				break;
 			case RETRIEVE_KEYS:
 				peer->serf.seq.key_query = seq;
@@ -1623,7 +1709,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, sizeof("Name") - 1);
 				msgpack_pack_str_body(pk, "Name", sizeof("Name") - 1);
 				msgpack_pack_str(pk, sizeof(RETRIEVE_KEYS_QUERY) - 1);
-				msgpack_pack_str_body(pk, RETRIEVE_KEYS_QUERY, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+				msgpack_pack_str_body(pk, RETRIEVE_KEYS_QUERY,
+					sizeof(RETRIEVE_KEYS_QUERY) - 1);
 
 				msgpack_pack_str(pk, sizeof("Payload") - 1);
 				msgpack_pack_str_body(pk, "Payload", sizeof("Payload") - 1);
@@ -1653,7 +1740,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, sizeof("Type") - 1);
 				msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
 				msgpack_pack_str(pk, sizeof(STREAM_MEMBER_EVENTS) - 1);
-				msgpack_pack_str_body(pk, STREAM_MEMBER_EVENTS, sizeof(STREAM_MEMBER_EVENTS) - 1);
+				msgpack_pack_str_body(pk, STREAM_MEMBER_EVENTS,
+					sizeof(STREAM_MEMBER_EVENTS) - 1);
 				break;
 			case LISTING_MEMBERS:
 				peer->serf.seq.list = seq;
@@ -1667,7 +1755,8 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str(pk, sizeof("Command") - 1);
 				msgpack_pack_str_body(pk, "Command", sizeof("Command") - 1);
 				msgpack_pack_str(pk, sizeof("members-filtered") - 1);
-				msgpack_pack_str_body(pk, "members-filtered", sizeof("members-filtered") - 1);
+				msgpack_pack_str_body(pk, "members-filtered",
+					sizeof("members-filtered") - 1);
 
 				msgpack_pack_str(pk, sizeof("Seq") - 1);
 				msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
@@ -1680,9 +1769,11 @@ static void serf_write_handler(ngx_event_t *wev)
 				msgpack_pack_str_body(pk, "Tags", sizeof("Tags") - 1);
 				msgpack_pack_map(pk, 1);
 				msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_KEY) - 1);
-				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_KEY, sizeof(MEMC_SERVER_TAG_KEY) - 1);
+				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_KEY,
+					sizeof(MEMC_SERVER_TAG_KEY) - 1);
 				msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_VAL) - 1);
-				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_VAL, sizeof(MEMC_SERVER_TAG_VAL) - 1);
+				msgpack_pack_str_body(pk, MEMC_SERVER_TAG_VAL,
+					sizeof(MEMC_SERVER_TAG_VAL) - 1);
 
 				msgpack_pack_str(pk, sizeof("Status") - 1);
 				msgpack_pack_str_body(pk, "Status", sizeof("Status") - 1);
@@ -1723,7 +1814,8 @@ static void serf_write_handler(ngx_event_t *wev)
 	}
 }
 
-static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
+static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
+		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
 {
 	SSL_CTX *ssl_ctx;
 	ngx_connection_t *c;
@@ -1769,15 +1861,13 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 		return 0;
 	} else {
-		if (!ngx_queue_empty(&peer->ticket_keys)) {
-			for (q = ngx_queue_head(&peer->ticket_keys);
-				q != ngx_queue_sentinel(&peer->ticket_keys);
-				q = ngx_queue_next(q)) {
-				key = ngx_queue_data(q, key_st, queue);
+		for (q = ngx_queue_head(&peer->ticket_keys);
+			q != ngx_queue_sentinel(&peer->ticket_keys);
+			q = ngx_queue_next(q)) {
+			key = ngx_queue_data(q, key_st, queue);
 
-				if (ngx_memcmp(name, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-					goto found;
-				}
+			if (ngx_memcmp(name, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+				goto found;
 			}
 		}
 
@@ -1861,7 +1951,8 @@ static void memc_read_handler(ngx_event_t *rev)
 		/* 1/4 of the page_size, is it enough? */
 		op->recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
 		if (!op->recv.start) {
-			ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated recv buffer");
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"ngx_palloc failed to allocated recv buffer");
 			return;
 		}
 
@@ -1879,7 +1970,8 @@ static void memc_read_handler(ngx_event_t *rev)
 
 			new_buf = ngx_palloc(c->pool, size * 2);
 			if (!new_buf) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_palloc failed to allocated new recv buffer");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"ngx_palloc failed to allocated new recv buffer");
 				return;
 			}
 
@@ -1951,7 +2043,8 @@ static void memc_write_handler(ngx_event_t *wev)
 	}
 }
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd, ngx_str_t *key, ngx_str_t *value, void *in_data)
+static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd,
+		ngx_str_t *key, ngx_str_t *value, void *in_data)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL;
@@ -2006,7 +2099,8 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	}
 
 #if MEMC_KEYS_ARE_HEX
-	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0, "memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
+		"memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
 #else /* MEMC_KEYS_ARE_HEX */
 	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
 		"memcached operation: %s \"%*s%s\"",
@@ -2059,8 +2153,10 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 		switch (cmd) {
 			case PROTOCOL_BINARY_CMD_SET:
 				reqs = (protocol_binary_request_set *)req_hdr;
-				reqs->message.body.flags = htonl(in_reqs->message.body.flags);
-				reqs->message.body.expiration = htonl(in_reqs->message.body.expiration);
+				reqs->message.body.flags
+					= htonl(in_reqs->message.body.flags);
+				reqs->message.body.expiration
+					= htonl(in_reqs->message.body.expiration);
 				break;
 			default:
 				break;
@@ -2200,7 +2296,8 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void 
 	key_len = htons(res_hdr->response.keylen);
 	body_len = htonl(res_hdr->response.bodylen);
 
-	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header) + body_len) {
+	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)
+			+ body_len) {
 		return NGX_ERROR;
 	}
 
@@ -2250,7 +2347,8 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void 
 			break;
 	}
 
-	ngx_log_error(log_level, op->c->log, 0, "memcached error %hd: %*s", status, data.len, data.data);
+	ngx_log_error(log_level, op->c->log, 0,
+		"memcached error %hd: %*s", status, data.len, data.data);
 
 	return NGX_ERROR;
 }
@@ -2329,7 +2427,8 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	return 0;
 }
 
-static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len, int *copy)
+static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
+		int *copy)
 {
 	memc_op_st *op;
 	peer_st *peer;
