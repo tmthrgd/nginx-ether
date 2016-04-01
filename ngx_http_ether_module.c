@@ -153,7 +153,7 @@ struct serf_cmd_st {
 };
 
 enum handle_member_resp_body_et {
-	HANDLE_MEMBER_IS_LIST,
+	HANDLE_LIST_MEMBERS,
 	HANDLE_ADD_MEMBER,
 	HANDLE_REMOVE_MEMBER,
 	HANDLE_UPDATE_MEMBER,
@@ -1570,7 +1570,7 @@ static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ss
 		return NGX_ERROR;
 	}
 
-	return handle_member_resp_body(c, peer, &members, HANDLE_MEMBER_IS_LIST);
+	return handle_member_resp_body(c, peer, &members, HANDLE_LIST_MEMBERS);
 }
 
 static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msgpack_object *members,
@@ -1602,7 +1602,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 	update_member = 0;
 
 	switch (todo) {
-		case HANDLE_MEMBER_IS_LIST:
+		case HANDLE_LIST_MEMBERS:
 		case HANDLE_ADD_MEMBER:
 			add_member = 1;
 			break;
@@ -1638,7 +1638,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 			return NGX_ERROR;
 		}
 
-		if (todo == HANDLE_MEMBER_IS_LIST) {
+		if (todo == HANDLE_LIST_MEMBERS) {
 			skip_member = 0;
 		} else {
 			skip_member = 1;
