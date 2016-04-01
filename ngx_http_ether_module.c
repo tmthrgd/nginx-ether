@@ -1724,35 +1724,33 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 			continue;
 		}
 
-		if (update_member) {
-			for (q = ngx_queue_head(&peer->memc.servers);
-				q != ngx_queue_sentinel(&peer->memc.servers);
-				q = ngx_queue_next(q)) {
-				server = ngx_queue_data(q, memc_server_st, queue);
+		for (q = ngx_queue_head(&peer->memc.servers);
+			q != ngx_queue_sentinel(&peer->memc.servers);
+			q = ngx_queue_next(q)) {
+			server = ngx_queue_data(q, memc_server_st, queue);
 
-				if (server->name.len == name.via.str.size
-					&& ngx_memcmp(name.via.str.ptr, server->name.data,
-						server->name.len) == 0) {
-					goto update_member;
+			if (server->name.len == name.via.str.size
+				&& ngx_memcmp(name.via.str.ptr, server->name.data,
+					server->name.len) == 0) {
+				if (add_member) {
+					ngx_log_error(NGX_LOG_INFO, c->log, 0,
+						"skipping add of existing memcached server in %s",
+						(todo == HANDLE_LIST_MEMBERS) ? "members-filtered"
+							: MEMBER_JOIN_EVENT " event");
+					skip_member = 1;
+					break;
 				}
-			}
 
+				/* update_member */
+				goto update_member;
+			}
+		}
+
+		if (update_member || skip_member) {
 			continue;
 		}
 
 		/* add_member */
-		/*for (q = ngx_queue_head(&peer->memc.servers);
-				q != ngx_queue_sentinel(&peer->memc.servers);
-				q = ngx_queue_next(q)) {
-				server = ngx_queue_data(q, memc_server_st, queue);
-
-				if (server->name.len == name.via.str.size
-					&& ngx_memcmp(name.via.str.ptr, server->name.data,
-						server->name.len) == 0) {
-					// duplicate
-				}
-			}*/
-
 		server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
 
 	update_member:
