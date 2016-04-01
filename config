@@ -4,7 +4,7 @@ if [ -n "$ngx_module_link" ]; then
 	# nginx-1.9.11+
 	ngx_module_type=HTTP
 	ngx_module_name=ngx_http_ether_module
-	ngx_module_incs=$ngx_addon_dir
+	ngx_module_incs=
 	ngx_module_deps=
 	ngx_module_srcs="$ngx_addon_dir/ngx_http_ether_module.c"
 	ngx_module_libs=
