@@ -148,8 +148,8 @@ struct serf_cmd_st {
 
 	ngx_str_t name;
 
-	add_serf_req_body_pt add_serf_req_body_ptr;
-	handle_serf_resp_pt handle_serf_resp_ptr;
+	add_serf_req_body_pt add_serf_req_body;
+	handle_serf_resp_pt handle_serf_resp;
 };
 
 enum handle_member_resp_body_et {
@@ -805,7 +805,7 @@ static void serf_read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
-	switch (cmd->handle_serf_resp_ptr(c, peer, size)) {
+	switch (cmd->handle_serf_resp(c, peer, size)) {
 		case NGX_AGAIN:
 			peer->serf.recv.pos = hdr_start;
 			goto cleanup;
@@ -865,7 +865,7 @@ static void serf_write_handler(ngx_event_t *wev)
 		msgpack_pack_uint64(pk, peer->serf.seq | peer->serf.state);
 
 		// body
-		cmd->add_serf_req_body_ptr(pk, peer);
+		cmd->add_serf_req_body(pk, peer);
 
 		peer->serf.send.start = (u_char *)sbuf->data;
 		peer->serf.send.pos = (u_char *)sbuf->data;
