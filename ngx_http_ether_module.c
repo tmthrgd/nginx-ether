@@ -34,6 +34,8 @@
 
 #define REALTIME_MAXDELTA 60*60*24*30
 
+#define SERF_SEQ_STATE_MASK 0x0f
+
 #ifndef HAVE_HTONLL
 #if NGX_HAVE_LITTLE_ENDIAN
 int64_t htonll(int64_t in);
@@ -493,9 +495,11 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "RAND_bytes failed");
 			return NGX_CONF_ERROR;
 		}
-	} while (!(seq.u64 & ~(uint64_t)0xff));
 
-	peer->serf.seq = seq.u64 & ~(uint64_t)0xff;
+		seq.u64 &= ~(uint64_t)SERF_SEQ_STATE_MASK;
+	} while (!seq.u64);
+
+	peer->serf.seq = seq.u64;
 
 	if (g_ssl_ctx_exdata_peer_index == -1) {
 		g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -787,19 +791,13 @@ static void serf_read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
-	if (!(seq.via.u64 & ~(uint64_t)0xff)) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0,
-			"malformed RPC response header, invalid sequence number");
-		goto done;
-	}
-
-	if (peer->serf.seq != (seq.via.u64 & ~(uint64_t)0xff)) {
+	if (peer->serf.seq != (seq.via.u64 & ~(uint64_t)SERF_SEQ_STATE_MASK)) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"unrecognised RPC seq number: %xd", seq.via.u64);
 		goto done;
 	}
 
-	b.state = seq.via.u64 & 0xff;
+	b.state = seq.via.u64 & SERF_SEQ_STATE_MASK;
 	cmd = bsearch(&b, kSerfCMDs, kNumSerfCMDs, sizeof(struct serf_cmd_st), serf_cmd_state_cmp);
 	if (!cmd) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
@@ -864,7 +862,7 @@ static void serf_write_handler(ngx_event_t *wev)
 
 		msgpack_pack_str(pk, sizeof("Seq") - 1);
 		msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
-		msgpack_pack_uint64(pk, peer->serf.seq | (uint8_t)peer->serf.state);
+		msgpack_pack_uint64(pk, peer->serf.seq | peer->serf.state);
 
 		// body
 		cmd->add_serf_req_body_ptr(pk, peer);
