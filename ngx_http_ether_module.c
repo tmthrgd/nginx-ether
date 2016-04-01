@@ -1102,7 +1102,10 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 
 	if (ngx_strncmp(event.via.str.ptr, "user", event.via.str.size) != 0) {
-		return NGX_OK;
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"received unrecognised event from serf: %*s",
+			event.via.str.size, event.via.str.ptr);
+		return NGX_ERROR;
 	}
 
 	if (ngx_strncmp(name.via.str.ptr, INSTALL_KEY_EVENT, name.via.str.size) == 0) {
@@ -1310,6 +1313,9 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	}
 
 	if (ngx_strncmp(type.via.str.ptr, "response", type.via.str.size) != 0) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"received unrecognised query response type from serf: %*s",
+			type.via.str.size, type.via.str.ptr);
 		return NGX_ERROR;
 	}
 
