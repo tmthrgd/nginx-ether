@@ -65,7 +65,7 @@ typedef enum {
 typedef struct {
 	uint32_t hash;
 	void *data;
-} chash_point_t;
+} chash_point_st;
 
 typedef struct {
 	ngx_ssl_session_ticket_key_t key;
@@ -124,7 +124,7 @@ typedef struct _peer_st {
 		ngx_queue_t servers;
 
 		ngx_uint_t npoints;
-		chash_point_t *points;
+		chash_point_st *points;
 	} memc;
 
 	ngx_msec_t timeout;
@@ -192,7 +192,7 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 static char *ether_msgpack_parse_map(msgpack_object *obj, ...);
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uint32_t hash);
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_st *point, uint32_t hash);
 
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
@@ -1825,7 +1825,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 			"ssl session cache have %d memcached servers", num);
 
 	peer->memc.npoints = 0;
-	peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_t) * CHASH_NPOINTS * num);
+	peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_st) * CHASH_NPOINTS * num);
 	if (!peer->memc.points) {
 		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 		return NGX_ERROR;
@@ -1884,7 +1884,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 		}
 	}
 
-	ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_t), chash_cmp_points);
+	ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_st), chash_cmp_points);
 
 	for (i = 0, j = 1; j < peer->memc.npoints; j++) {
 		if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
@@ -1994,8 +1994,8 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 {
-	chash_point_t *first = (chash_point_t *)one;
-	chash_point_t *second = (chash_point_t *)two;
+	chash_point_st *first = (chash_point_st *)one;
+	chash_point_st *second = (chash_point_st *)two;
 
 	if (first->hash < second->hash) {
 		return -1;
@@ -2006,7 +2006,7 @@ static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 	}
 }
 
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_t *point, uint32_t hash)
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_st *point, uint32_t hash)
 {
 	ngx_uint_t i, j, k;
 
