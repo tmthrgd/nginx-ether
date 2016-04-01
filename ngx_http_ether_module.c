@@ -2518,6 +2518,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ngx_connection_t *c;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
+	ngx_ssl_session_t *sess = NULL;
 #if MEMC_KEYS_ARE_HEX
 	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 #endif /* MEMC_KEYS_ARE_HEX */
@@ -2534,11 +2535,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 		if (rc == NGX_OK) {
 			*copy = 0;
-			return SSL_SESSION_from_bytes(value.data, value.len);
+			sess = SSL_SESSION_from_bytes(value.data, value.len);
 		}
 
-		/* rc == NGX_ERROR */
-		return NULL;
+		/* rc == NGX_OK || rc == NGX_ERROR */
+		memc_cleanup_operation(op);
+		return sess;
 	}
 
 	peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
