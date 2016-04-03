@@ -2526,13 +2526,8 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 		return 0;
 	}
 
-#if MEMC_KEYS_ARE_HEX
-	key.data = hex;
-	key.len = ngx_hex_dump(hex, SSL_SESSION_get_id(sess, &len), len) - hex;
-#else /* MEMC_KEYS_ARE_HEX */
 	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	key.len = len;
-#endif /* MEMC_KEYS_ARE_HEX */
 
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
@@ -2562,12 +2557,17 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	p += nonce_len;
 
 	if (!EVP_AEAD_CTX_seal(&aead_ctx, p, &out_len, session_len + max_overhead,
-			nonce, nonce_len, session, session_len, NULL, 0)) {
+			nonce, nonce_len, session, session_len, key.data, key.len)) {
 		goto cleanup;
 	}
 	p += out_len;
 
 	value.len = p - value.data;
+
+#if MEMC_KEYS_ARE_HEX
+	key.len = ngx_hex_dump(hex, key.data, key.len) - hex;
+	key.data = hex;
+#endif /* MEMC_KEYS_ARE_HEX */
 
 	ngx_memzero(&req, sizeof(protocol_binary_request_set));
 	req.message.body.expiration = peer->ssl->session_timeout;
@@ -2680,7 +2680,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ciphertext_len = value.len - SSL_TICKET_KEY_NAME_LEN - nonce_len;
 
 	if (!EVP_AEAD_CTX_open(&aead_ctx, p, &plaintext_len, ciphertext_len,
-			nonce, nonce_len, p, ciphertext_len, NULL, 0)) {
+			nonce, nonce_len, p, ciphertext_len, id, len)) {
 		goto cleanup;
 	}
 
