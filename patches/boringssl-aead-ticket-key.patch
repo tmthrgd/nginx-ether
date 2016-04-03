@@ -59,7 +59,7 @@ diff -rupN a/ssl/s3_lib.c b/ssl/s3_lib.c
      return ssl->cipher_list;
 diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
 --- a/ssl/s3_srvr.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/s3_srvr.c	2016-04-03 13:34:13.595251747 +0930
++++ b/ssl/s3_srvr.c	2016-04-03 14:04:06.560142579 +0930
 @@ -1981,10 +1981,12 @@ int ssl3_send_server_certificate(SSL *ss
  /* send a new session ticket (not necessarily for a new session) */
  int ssl3_send_new_session_ticket(SSL *ssl) {
@@ -144,8 +144,8 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
 +      p += nonce_len;
 +      /* Encrypt session data */
 +      if (!EVP_AEAD_CTX_seal(&aead_ctx, p, &out_len,
-+                             session_len + max_ticket_overhead - 16, iv,
-+                             nonce_len, session, session_len, NULL, 0)) {
++                             session_len + (max_ticket_overhead - nonce_len - 16),
++                             iv, nonce_len, session, session_len, NULL, 0)) {
 +        goto err;
 +      }
 +      p += out_len;
