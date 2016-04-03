@@ -2691,7 +2691,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		goto cleanup;
 	}
 
-	memcpy(sess->session_id, id, len);
+	ngx_memcpy(sess->session_id, id, len);
 	sess->session_id_length = len;
 
 cleanup:
