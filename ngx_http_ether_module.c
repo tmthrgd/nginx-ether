@@ -70,7 +70,12 @@ typedef struct {
 } chash_point_st;
 
 typedef struct {
-	ngx_ssl_session_ticket_key_t key;
+	u_char name[SSL_TICKET_KEY_NAME_LEN];
+
+	u_char key[EVP_AEAD_MAX_KEY_LENGTH];
+	size_t key_len;
+
+	const EVP_AEAD *aead;
 
 	int was_default;
 
@@ -1109,7 +1114,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 
 	if (ngx_strncmp(name.via.str.ptr, INSTALL_KEY_EVENT, name.via.str.size) == 0) {
-		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN + 32) {
+		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 			goto error;
 		}
@@ -1124,8 +1129,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			q = ngx_queue_next(q)) {
 			key = ngx_queue_data(q, key_st, queue);
 
-			if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
-					SSL_TICKET_KEY_NAME_LEN) == 0) {
+			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0,
 					INSTALL_KEY_EVENT " event: already have key");
 				goto error;
@@ -1138,9 +1142,12 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			goto error;
 		}
 
-		ngx_memcpy(key->key.name, payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-		ngx_memcpy(key->key.aes_key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
-		ngx_memcpy(key->key.hmac_key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+		key->key_len = payload.via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+
+		ngx_memcpy(key->name, payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
+		ngx_memcpy(key->key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->key_len);
+
+		key->aead = EVP_aead_aes_128_gcm();
 
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 	} else if (ngx_strncmp(name.via.str.ptr, REMOVE_KEY_EVENT, name.via.str.size) == 0) {
@@ -1159,10 +1166,11 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			q = ngx_queue_next(q)) {
 			key = ngx_queue_data(q, key_st, queue);
 
-			if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
-				SSL_TICKET_KEY_NAME_LEN) != 0) {
+			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) != 0) {
 				continue;
 			}
+
+			ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
 
 			ngx_queue_remove(q);
 
@@ -1177,7 +1185,6 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 					"on default key, session ticket and cache support disabled");
 			}
 
-			ngx_memzero(&key->key, sizeof(key->key));
 			ngx_pfree(c->pool, key); // is this the right pool?
 			break;
 		}
@@ -1208,8 +1215,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			q = ngx_queue_next(q)) {
 			key = ngx_queue_data(q, key_st, queue);
 
-			if (ngx_memcmp(payload.via.bin.ptr, key->key.name,
-						SSL_TICKET_KEY_NAME_LEN) == 0) {
+			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				key->was_default = 0;
 				peer->default_ticket_key = key;
 
@@ -1378,7 +1384,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 			goto error;
 		}
 
-		if (ptr->via.bin.size != SSL_TICKET_KEY_NAME_LEN + 32) {
+		if (ptr->via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid ssl session ticket key size");
 			goto error;
 		}
@@ -1393,7 +1399,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 			q = ngx_queue_next(q)) {
 			key = ngx_queue_data(q, key_st, queue);
 
-			if (ngx_memcmp(ptr->via.bin.ptr, key->key.name,
+			if (ngx_memcmp(ptr->via.bin.ptr, key->name,
 					SSL_TICKET_KEY_NAME_LEN) == 0) {
 				ngx_log_error(NGX_LOG_INFO, c->log, 0,
 					RETRIEVE_KEYS_QUERY " query: already have key");
@@ -1407,9 +1413,12 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 			goto error;
 		}
 
-		ngx_memcpy(key->key.name, ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-		ngx_memcpy(key->key.aes_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, 16);
-		ngx_memcpy(key->key.hmac_key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN + 16, 16);
+		key->key_len = ptr->via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+
+		ngx_memcpy(key->name, ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
+		ngx_memcpy(key->key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->key_len);
+
+		key->aead = EVP_aead_aes_128_gcm();
 
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 
@@ -1961,19 +1970,19 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket encrypt, key: \"%*s\" (%s session)",
-			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
+			ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			SSL_session_reused(ssl_conn) ? "reused" : "new");
 
-		if (!EVP_AEAD_CTX_init(ctx, EVP_aead_aes_128_gcm(), key->key.aes_key, 16,
+		if (RAND_bytes(iv, EVP_AEAD_nonce_length(key->aead)) != 1) {
+			return -1;
+		}
+
+		if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
 				EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
 			return -1;
 		}
 
-		if (RAND_bytes(iv, EVP_AEAD_nonce_length(ctx->aead)) != 1) {
-			return -1;
-		}
-
-		ngx_memcpy(name, key->key.name, SSL_TICKET_KEY_NAME_LEN);
+		ngx_memcpy(name, key->name, SSL_TICKET_KEY_NAME_LEN);
 
 		return 0;
 	} else {
@@ -1982,7 +1991,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			q = ngx_queue_next(q)) {
 			key = ngx_queue_data(q, key_st, queue);
 
-			if (ngx_memcmp(name, key->key.name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+			if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				goto found;
 			}
 		}
@@ -1996,10 +2005,10 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 	found:
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
-			ngx_hex_dump(buf, key->key.name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
+			ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			(key == peer->default_ticket_key) ? " (default)" : "");
 
-		if (!EVP_AEAD_CTX_init(ctx, EVP_aead_aes_128_gcm(), key->key.aes_key, 16,
+		if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
 				EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
 			return -1;
 		}
