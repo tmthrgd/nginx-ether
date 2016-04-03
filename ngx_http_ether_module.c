@@ -2549,7 +2549,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	ngx_memcpy(p, name, SSL_TICKET_KEY_NAME_LEN);
 	p += SSL_TICKET_KEY_NAME_LEN;
 
-	memcpy(p, nonce, nonce_len);
+	ngx_memcpy(p, nonce, nonce_len);
 	p += nonce_len;
 
 	if (!EVP_AEAD_CTX_seal(&aead_ctx, p, &out_len, session_len + max_overhead,
