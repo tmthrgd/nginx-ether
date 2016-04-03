@@ -2669,7 +2669,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	nonce = &value.data[SSL_TICKET_KEY_NAME_LEN];
 
 	if (session_ticket_key_handler(ssl_conn, value.data, nonce, (EVP_CIPHER_CTX *)&aead_ctx,
-			SSL_magic_tlsext_ticket_key_cb_aead_ptr(), 0) < 0) {
+			SSL_magic_tlsext_ticket_key_cb_aead_ptr(), 0) <= 0) {
 		goto cleanup;
 	}
 
