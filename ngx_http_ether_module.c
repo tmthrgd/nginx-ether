@@ -2494,6 +2494,8 @@ static void memc_cleanup_pool_handler(void *data)
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
+	SSL_CTX *ssl_ctx;
+	ngx_connection_t *c;
 	peer_st *peer;
 	ngx_str_t key, value = {0};
 	unsigned int len;
@@ -2511,7 +2513,10 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 #endif /* MEMC_KEYS_ARE_HEX */
 	protocol_binary_request_set req;
 
-	peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
+	c = ngx_ssl_get_connection(ssl_conn);
+	ssl_ctx = c->ssl->session_ctx;
+
+	peer = SSL_CTX_get_ex_data(ssl_ctx, g_ssl_ctx_exdata_peer_index);
 	if (!peer) {
 		return 0;
 	}
@@ -2589,10 +2594,11 @@ cleanup:
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
 		int *copy)
 {
+	SSL_CTX *ssl_ctx;
+	ngx_connection_t *c;
 	memc_op_st *op;
 	peer_st *peer;
 	ngx_str_t key, value;
-	ngx_connection_t *c;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
 	ngx_ssl_session_t *sess = NULL;
@@ -2607,10 +2613,11 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 #endif /* MEMC_KEYS_ARE_HEX */
 
 	c = ngx_ssl_get_connection(ssl_conn);
+	ssl_ctx = c->ssl->session_ctx;
 
-	op = SSL_get_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index);
+	op = SSL_get_ex_data(ssl_conn, g_ssl_exdata_memc_op_index);
 	if (!op) {
-		peer = SSL_CTX_get_ex_data(ssl_conn->ctx, g_ssl_ctx_exdata_peer_index);
+		peer = SSL_CTX_get_ex_data(ssl_ctx, g_ssl_ctx_exdata_peer_index);
 		if (!peer) {
 			return NULL;
 		}
@@ -2630,7 +2637,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 		op->ev = c->write;
 
-		if (!SSL_set_ex_data(c->ssl->connection, g_ssl_exdata_memc_op_index, op)) {
+		if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_memc_op_index, op)) {
 			memc_cleanup_operation(op);
 			return NULL;
 		}
