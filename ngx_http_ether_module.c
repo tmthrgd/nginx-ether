@@ -2541,7 +2541,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 		goto cleanup;
 	}
 
-	if (!SSL_SESSION_to_bytes(sess, &session, &session_len)) {
+	if (!SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)) {
 		goto cleanup;
 	}
 
@@ -2686,6 +2686,13 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 	*copy = 0;
 	sess = SSL_SESSION_from_bytes(p, plaintext_len);
+	if (!sess) {
+		ERR_clear_error(); /* Don't leave an error on the queue. */
+		goto cleanup;
+	}
+
+	memcpy(sess->session_id, id, len);
+	sess->session_id_length = len;
 
 cleanup:
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
