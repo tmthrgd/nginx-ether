@@ -1942,7 +1942,7 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 #endif
 
 	if (hctx != SSL_magic_tlsext_ticket_key_cb_aead_ptr()) {
-		return TLSEXT_TCKET_CB_WANT_AEAD;
+		return TLSEXT_TICKET_CB_WANT_AEAD;
 	}
 
 	c = ngx_ssl_get_connection(ssl_conn);

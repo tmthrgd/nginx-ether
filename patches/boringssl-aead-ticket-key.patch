@@ -1,13 +1,13 @@
 diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
 --- a/include/openssl/ssl.h	2016-03-29 21:14:01.000000000 +1030
-+++ b/include/openssl/ssl.h	2016-04-03 12:42:09.667761027 +0930
++++ b/include/openssl/ssl.h	2016-04-03 13:34:08.839228163 +0930
 @@ -1775,7 +1775,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
   * In both modes, |ctx| and |hmac_ctx| will already have been initialized with
   * |EVP_CIPHER_CTX_init| and |HMAC_CTX_init|, respectively. |callback|
   * configures |hmac_ctx| with an HMAC digest and key, and configures |ctx|
 - * for encryption or decryption, based on the mode.
 + * for encryption or decryption, based on the mode. If |callback| returns
-+ * TLSEXT_TCKET_CB_WANT_AEAD then |callback| will be called a second time
++ * TLSEXT_TICKET_CB_WANT_AEAD then |callback| will be called a second time
 + * with |ctx| set to a |EVP_AEAD_CTX|* on which |EVP_AEAD_CTX_zero| has been
 + * called, and |hmac_ctx| will be set to |SSL_magic_tlsext_ticket_key_cb_aead_ptr|.
   *
@@ -26,7 +26,7 @@ diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
 + *
 + * See |SSL_CTX_set_tlsext_ticket_key_cb|
 + * and |SSL_magic_tlsext_ticket_key_cb_aead_ptr|. */
-+#define TLSEXT_TCKET_CB_WANT_AEAD -0xAEAD
++#define TLSEXT_TICKET_CB_WANT_AEAD -0xAEAD
 +
  
  /* Elliptic curve Diffie-Hellman.
@@ -59,7 +59,7 @@ diff -rupN a/ssl/s3_lib.c b/ssl/s3_lib.c
      return ssl->cipher_list;
 diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
 --- a/ssl/s3_srvr.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/s3_srvr.c	2016-04-03 13:26:20.372905164 +0930
++++ b/ssl/s3_srvr.c	2016-04-03 13:34:13.595251747 +0930
 @@ -1981,10 +1981,12 @@ int ssl3_send_server_certificate(SSL *ss
  /* send a new session ticket (not necessarily for a new session) */
  int ssl3_send_new_session_ticket(SSL *ssl) {
@@ -101,7 +101,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
 -                                     1 /* encrypt */) < 0) {
 +      int cb_ret = tctx->tlsext_ticket_key_cb(ssl, key_name, iv, &ctx, &hctx,
 +                                              1 /* encrypt */);
-+      if (cb_ret == TLSEXT_TCKET_CB_WANT_AEAD) {
++      if (cb_ret == TLSEXT_TICKET_CB_WANT_AEAD) {
 +        is_aead = 1;
 +
 +        EVP_AEAD_CTX_zero(&aead_ctx);
@@ -189,7 +189,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
  
 diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
 --- a/ssl/t1_lib.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/t1_lib.c	2016-04-03 13:20:29.267164124 +0930
++++ b/ssl/t1_lib.c	2016-04-03 13:34:11.115239449 +0930
 @@ -2443,6 +2443,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
                         size_t ticket_len, const uint8_t *session_id,
                         size_t session_id_len) {
@@ -210,7 +210,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
      int cb_ret = ssl_ctx->tlsext_ticket_key_cb(
          ssl, (uint8_t *)ticket /* name */, (uint8_t *)iv, &cipher_ctx,
          &hmac_ctx, 0 /* decrypt */);
-+    if (cb_ret == TLSEXT_TCKET_CB_WANT_AEAD) {
++    if (cb_ret == TLSEXT_TICKET_CB_WANT_AEAD) {
 +      is_aead = 1;
 +
 +      EVP_AEAD_CTX_zero(&aead_ctx);
