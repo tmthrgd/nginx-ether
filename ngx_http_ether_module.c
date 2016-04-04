@@ -1713,7 +1713,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 				str = &ptr_kv->val.via.str;
 
 				rc = ngx_atoi((u_char *)str->ptr, str->size);
-				if (rc == NGX_ERROR) {
+				if (rc < 0 || rc > 0xFFFF) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0,
 						"malformed RPC response, "
 						"expect " MEMC_PORT_TAG_KEY " tag to be "
