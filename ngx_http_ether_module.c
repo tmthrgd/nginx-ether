@@ -744,6 +744,7 @@ static void serf_read_handler(ngx_event_t *rev)
 			}
 
 			ngx_memcpy(new_buf, peer->serf.recv.start, size);
+			ngx_pfree(c->pool, peer->serf.recv.start);
 
 			peer->serf.recv.start = new_buf;
 			peer->serf.recv.pos = new_buf;
@@ -2098,6 +2099,7 @@ static void memc_read_handler(ngx_event_t *rev)
 			}
 
 			ngx_memcpy(new_buf, op->recv.start, size);
+			ngx_pfree(c->pool, op->recv.start);
 
 			op->recv.start = new_buf;
 			op->recv.pos = new_buf;
