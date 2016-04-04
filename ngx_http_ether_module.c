@@ -1812,7 +1812,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 					"malformed RPC response, expect Addr to be "
 					"an array of length 4 or 16");
 				return NGX_ERROR;
-			}
+		}
 
 		ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
 
