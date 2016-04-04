@@ -1261,9 +1261,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 #endif
 
-	if (payload.via.bin.size) {
-		ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
-	}
+	ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
 
 	return NGX_OK;
 
@@ -2577,13 +2575,8 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
 
 cleanup:
-	if (session) {
-		OPENSSL_free(session);
-	}
-
-	if (value.data) {
-		OPENSSL_free(value.data);
-	}
+	OPENSSL_free(session);
+	OPENSSL_free(value.data);
 
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
 
@@ -2611,6 +2604,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
 
+	EVP_AEAD_CTX_zero(&aead_ctx);
+
 	op = SSL_get_ex_data(ssl_conn, g_ssl_exdata_memc_op_index);
 	if (!op) {
 		peer = SSL_CTX_get_ex_data(ssl_ctx, g_ssl_ctx_exdata_peer_index);
@@ -2634,14 +2629,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		op->ev = c->write;
 
 		if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_memc_op_index, op)) {
-			memc_cleanup_operation(op);
-			return NULL;
+			goto cleanup;
 		}
 
 		cln = ngx_pool_cleanup_add(c->pool, 0);
 		if (!cln) {
-			memc_cleanup_operation(op);
-			return NULL;
+			goto cleanup;
 		}
 
 		cln->handler = memc_cleanup_pool_handler;
@@ -2657,13 +2650,10 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	if (rc == NGX_ERROR) {
-		memc_cleanup_operation(op);
-		return NULL;
+		goto cleanup;
 	}
 
 	/* rc == NGX_OK */
-	EVP_AEAD_CTX_zero(&aead_ctx);
-
 	if (value.len < SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH) {
 		goto cleanup;
 	}
