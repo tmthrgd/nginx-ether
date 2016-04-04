@@ -1868,7 +1868,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 				break;
 #endif /* NGX_HAVE_INET6 */
 			default: /* AF_INET */
-				s_addr = &server->sin6.sin6_addr.s6_addr[0];
+				s_addr = (unsigned char *)&server->sin.sin_addr.s_addr;
 				port = ntohs(server->sin.sin_port);
 				break;
 		}
