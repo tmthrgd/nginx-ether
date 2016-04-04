@@ -675,13 +675,13 @@ static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
 			if (ngx_strncmp(str->ptr, name, str->size) == 0) {
 				found = 1;
 
-				if (out) {
-					*out = ptr->val;
-				}
-
 				if (out && out->type && ptr->val.type != out->type) {
 					va_end(ap);
 					return "malformed RPC response, wrong type given";
+				}
+
+				if (out) {
+					*out = ptr->val;
 				}
 
 				break;
