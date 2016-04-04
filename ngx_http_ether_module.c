@@ -2415,8 +2415,8 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void 
 		return NGX_ERROR;
 	}
 
-	key_len = htons(res_hdr->response.keylen);
-	body_len = htonl(res_hdr->response.bodylen);
+	key_len = ntohs(res_hdr->response.keylen);
+	body_len = ntohl(res_hdr->response.bodylen);
 
 	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)
 			+ body_len) {
@@ -2431,17 +2431,17 @@ static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void 
 		- key_len
 		- res_hdr->response.extlen;
 
-	status = htons(res_hdr->response.status);
+	status = ntohs(res_hdr->response.status);
 
 	if (out_res) {
 		out_res->message.header.response.status = status;
 		out_res->message.header.response.opaque = res_hdr->response.opaque;
-		out_res->message.header.response.cas = htonll(res_hdr->response.cas);
+		out_res->message.header.response.cas = ntohll(res_hdr->response.cas);
 
 		switch (op->cmd) {
 			case PROTOCOL_BINARY_CMD_GET:
 				resg = (protocol_binary_response_get *)res_hdr;
-				out_resg->message.body.flags = htonl(resg->message.body.flags);
+				out_resg->message.body.flags = ntohl(resg->message.body.flags);
 				break;
 			default:
 				break;
