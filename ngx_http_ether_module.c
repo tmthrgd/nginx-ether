@@ -1283,6 +1283,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	char *err;
 	ngx_buf_t dummy_recv;
 	size_t i;
+	int was_default = 0;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif
@@ -1419,6 +1420,8 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 
 		key->aead = EVP_aead_aes_128_gcm();
 
+		key->was_default = was_default;
+
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 
 	is_default_key:
@@ -1432,6 +1435,9 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 				SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx,
 					SSL_SESS_CACHE_SERVER|SSL_SESS_CACHE_NO_INTERNAL);
 			}
+
+			/* the next key on will all be former defaults */
+			was_default = 1;
 		}
 	}
 
