@@ -1790,6 +1790,16 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 	update_member:
 		have_changed = 1;
 
+		/* IPv4 in IPv6 prefix: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff */
+		if (addr.via.bin.size == 16
+			&& *(uint64_t *)&addr.via.bin.ptr[ 0] == 0
+			&& *(uint16_t *)&addr.via.bin.ptr[ 8] == 0
+			&& *(uint16_t *)&addr.via.bin.ptr[10] == 0xFFFF) {
+			/* strip 12 byte prefix */
+			addr.via.bin.ptr += 12;
+			addr.via.bin.size -= 12;
+		}
+
 		switch (addr.via.bin.size) {
 			case 4:
 				server->sin.sin_family = AF_INET;
