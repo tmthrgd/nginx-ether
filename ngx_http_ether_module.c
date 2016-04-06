@@ -212,6 +212,9 @@ static void memc_cleanup_pool_handler(void *data);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
+static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
+		EVP_AEAD_CTX *ctx);
+static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name, EVP_AEAD_CTX *ctx);
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
@@ -1955,19 +1958,26 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msg
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
 {
-	EVP_AEAD_CTX *ctx = (EVP_AEAD_CTX *)ectx;
+	if (hctx != SSL_magic_tlsext_ticket_key_cb_aead_ptr()) {
+		return TLSEXT_TICKET_CB_WANT_AEAD;
+	}
+
+	if (enc) {
+		return session_ticket_key_enc(ssl_conn, name, iv, (EVP_AEAD_CTX *)ectx);
+	} else {
+		return session_ticket_key_dec(ssl_conn, name, (EVP_AEAD_CTX *)ectx);
+	}
+}
+
+static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
+		EVP_AEAD_CTX *ctx) {
 	SSL_CTX *ssl_ctx;
 	ngx_connection_t *c;
 	peer_st *peer;
 	key_st *key;
-	ngx_queue_t *q;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
-
-	if (hctx != SSL_magic_tlsext_ticket_key_cb_aead_ptr()) {
-		return TLSEXT_TICKET_CB_WANT_AEAD;
-	}
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -1977,47 +1987,56 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 		return -1;
 	}
 
-	if (enc) {
-		key = peer->default_ticket_key;
-		if (!key) {
-			return -1;
+	key = peer->default_ticket_key;
+	if (!key) {
+		return -1;
+	}
+
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
+		"ssl session ticket encrypt, key: \"%*s\" (%s session)",
+		ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
+		SSL_session_reused(ssl_conn) ? "reused" : "new");
+
+	if (RAND_bytes(nonce, EVP_AEAD_nonce_length(key->aead)) != 1) {
+		return -1;
+	}
+
+	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
+			EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
+		return -1;
+	}
+
+	ngx_memcpy(name, key->name, SSL_TICKET_KEY_NAME_LEN);
+	return 0;
+}
+
+static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name, EVP_AEAD_CTX *ctx) {
+	SSL_CTX *ssl_ctx;
+	ngx_connection_t *c;
+	peer_st *peer;
+	key_st *key;
+	ngx_queue_t *q;
+#if NGX_DEBUG
+	u_char buf[32];
+#endif
+
+	c = ngx_ssl_get_connection(ssl_conn);
+	ssl_ctx = c->ssl->session_ctx;
+
+	peer = SSL_CTX_get_ex_data(ssl_ctx, g_ssl_ctx_exdata_peer_index);
+	if (!peer) {
+		return -1;
+	}
+
+	for (q = ngx_queue_head(&peer->ticket_keys);
+		q != ngx_queue_sentinel(&peer->ticket_keys);
+		q = ngx_queue_next(q)) {
+		key = ngx_queue_data(q, key_st, queue);
+
+		if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) != 0) {
+			continue;
 		}
 
-		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
-			"ssl session ticket encrypt, key: \"%*s\" (%s session)",
-			ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
-			SSL_session_reused(ssl_conn) ? "reused" : "new");
-
-		if (RAND_bytes(iv, EVP_AEAD_nonce_length(key->aead)) != 1) {
-			return -1;
-		}
-
-		if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
-				EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
-			return -1;
-		}
-
-		ngx_memcpy(name, key->name, SSL_TICKET_KEY_NAME_LEN);
-
-		return 0;
-	} else {
-		for (q = ngx_queue_head(&peer->ticket_keys);
-			q != ngx_queue_sentinel(&peer->ticket_keys);
-			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
-
-			if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-				goto found;
-			}
-		}
-
-		ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-			"ssl session ticket decrypt, key: \"%*s\" not found",
-			ngx_hex_dump(buf, name, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
-
-		return 0;
-
-	found:
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
 			ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
@@ -2034,6 +2053,12 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 			return 1;
 		}
 	}
+
+	ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+		"ssl session ticket decrypt, key: \"%*s\" not found",
+		ngx_hex_dump(buf, (uint8_t *)name, SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+
+	return 0;
 }
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
@@ -2524,11 +2549,10 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	ngx_str_t key, value = {0};
 	unsigned int len;
 	u_char *session = NULL;
-	size_t session_len, out_len, nonce_len, max_overhead;
+	size_t session_len, out_len;
 	EVP_AEAD_CTX aead_ctx;
-	u_char name[SSL_TICKET_KEY_NAME_LEN];
-	u_char nonce[EVP_AEAD_MAX_NONCE_LENGTH];
-	u_char *p;
+	CBB cbb;
+	u_char *name, *nonce, *p;
 #if MEMC_KEYS_ARE_HEX
 	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 #endif /* MEMC_KEYS_ARE_HEX */
@@ -2547,38 +2571,22 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
-	if (session_ticket_key_handler(ssl_conn, name, nonce, (EVP_CIPHER_CTX *)&aead_ctx,
-			SSL_magic_tlsext_ticket_key_cb_aead_ptr(), 1) < 0) {
+	if (!SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)
+		|| !CBB_init(&cbb, SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH + session_len
+				+ EVP_AEAD_MAX_OVERHEAD)
+		|| !CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
+		|| !CBB_reserve(&cbb, &nonce, EVP_AEAD_MAX_NONCE_LENGTH)
+		|| session_ticket_key_enc(ssl_conn, name, nonce, &aead_ctx) < 0
+		|| !CBB_did_write(&cbb, EVP_AEAD_nonce_length(aead_ctx.aead))
+		|| !CBB_reserve(&cbb, &p, session_len + EVP_AEAD_max_overhead(aead_ctx.aead))
+		|| !EVP_AEAD_CTX_seal(&aead_ctx,
+				p, &out_len, session_len + EVP_AEAD_max_overhead(aead_ctx.aead),
+				nonce, EVP_AEAD_nonce_length(aead_ctx.aead),
+				session, session_len, key.data, key.len)
+		|| !CBB_did_write(&cbb, out_len)
+		|| !CBB_finish(&cbb, &value.data, &value.len)) {
 		goto cleanup;
 	}
-
-	if (!SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)) {
-		goto cleanup;
-	}
-
-	nonce_len = EVP_AEAD_nonce_length(aead_ctx.aead);
-	max_overhead = EVP_AEAD_max_overhead(aead_ctx.aead);
-
-	value.data = OPENSSL_malloc(SSL_TICKET_KEY_NAME_LEN + nonce_len + session_len + max_overhead);
-	if (!value.data) {
-		goto cleanup;
-	}
-
-	p = value.data;
-
-	ngx_memcpy(p, name, SSL_TICKET_KEY_NAME_LEN);
-	p += SSL_TICKET_KEY_NAME_LEN;
-
-	ngx_memcpy(p, nonce, nonce_len);
-	p += nonce_len;
-
-	if (!EVP_AEAD_CTX_seal(&aead_ctx, p, &out_len, session_len + max_overhead,
-			nonce, nonce_len, session, session_len, key.data, key.len)) {
-		goto cleanup;
-	}
-	p += out_len;
-
-	value.len = p - value.data;
 
 #if MEMC_KEYS_ARE_HEX
 	key.len = ngx_hex_dump(hex, key.data, key.len) - hex;
@@ -2593,6 +2601,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 cleanup:
 	OPENSSL_free(session);
 	OPENSSL_free(value.data);
+	CBB_cleanup(&cbb);
 
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
 
@@ -2611,8 +2620,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ngx_pool_cleanup_t *cln;
 	ngx_ssl_session_t *sess = NULL;
 	EVP_AEAD_CTX aead_ctx;
-	uint8_t *nonce, *p;
-	size_t nonce_len, plaintext_len, ciphertext_len;
+	CBS cbs, name, nonce;
+	size_t plaintext_len;
 #if MEMC_KEYS_ARE_HEX
 	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 #endif /* MEMC_KEYS_ARE_HEX */
@@ -2670,30 +2679,20 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	/* rc == NGX_OK */
-	if (value.len < SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH) {
-		goto cleanup;
-	}
+	CBS_init(&cbs, value.data, value.len);
 
-	nonce = &value.data[SSL_TICKET_KEY_NAME_LEN];
-
-	if (session_ticket_key_handler(ssl_conn, value.data, nonce, (EVP_CIPHER_CTX *)&aead_ctx,
-			SSL_magic_tlsext_ticket_key_cb_aead_ptr(), 0) <= 0) {
-		goto cleanup;
-	}
-
-	nonce_len = EVP_AEAD_nonce_length(aead_ctx.aead);
-
-	/* Decrypt the session data. */
-	p = &value.data[SSL_TICKET_KEY_NAME_LEN + nonce_len];
-	ciphertext_len = value.len - SSL_TICKET_KEY_NAME_LEN - nonce_len;
-
-	if (!EVP_AEAD_CTX_open(&aead_ctx, p, &plaintext_len, ciphertext_len,
-			nonce, nonce_len, p, ciphertext_len, id, len)) {
+	if (!CBS_get_bytes(&cbs, &name, SSL_TICKET_KEY_NAME_LEN)
+		|| session_ticket_key_dec(ssl_conn, CBS_data(&name), &aead_ctx) <= 0
+		|| !CBS_get_bytes(&cbs, &nonce, EVP_AEAD_nonce_length(aead_ctx.aead))
+		|| !EVP_AEAD_CTX_open(&aead_ctx,
+				(uint8_t *)CBS_data(&cbs), &plaintext_len, CBS_len(&cbs),
+				CBS_data(&nonce), CBS_len(&nonce), CBS_data(&cbs), CBS_len(&cbs),
+				id, len)) {
 		goto cleanup;
 	}
 
 	*copy = 0;
-	sess = SSL_SESSION_from_bytes(p, plaintext_len);
+	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len);
 	if (!sess) {
 		ERR_clear_error(); /* Don't leave an error on the queue. */
 		goto cleanup;
