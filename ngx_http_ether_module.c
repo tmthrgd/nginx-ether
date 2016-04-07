@@ -2377,7 +2377,13 @@ static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command c
 	op->send.last = data + len;
 	op->send.end = data + len;
 
-	hash = ngx_crc32_long(key->data, key->len);
+	/* see comment in ngx_crc32.c */
+	if (key->len > 64) {
+		hash = ngx_crc32_long(key->data, key->len);
+	} else {
+		hash = ngx_crc32_short(key->data, key->len);
+	}
+
 	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
 	server = peer->memc.points[hash % peer->memc.npoints].data;
 
