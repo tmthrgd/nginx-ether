@@ -107,7 +107,7 @@ typedef struct {
 
 	ngx_event_t *ev;
 
-	peer_st *peer;
+	const peer_st *peer;
 
 	ngx_buf_t send;
 	ngx_buf_t recv;
@@ -196,22 +196,22 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
 static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
 
-static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msgpack_object *members,
-		enum handle_member_resp_body_et todo);
+static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
+		const msgpack_object *members, enum handle_member_resp_body_et todo);
 
 static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
 		ngx_log_t *log);
-static char *ether_msgpack_parse_map(msgpack_object *obj, ...);
+static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...);
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_st *point, uint32_t hash);
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *point, uint32_t hash);
 
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd,
-		ngx_str_t *key, ngx_str_t *value, void *data);
-static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void *data);
+static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
+		const ngx_str_t *key, const ngx_str_t *value, const void *data);
+static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
 static void memc_cleanup_pool_handler(void *data);
 
@@ -401,7 +401,7 @@ static void *create_srv_conf(ngx_conf_t *cf)
 
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	srv_conf_t *prev = parent;
+	const srv_conf_t *prev = parent;
 	srv_conf_t *conf = child;
 	ngx_http_ssl_srv_conf_t *ssl;
 	ngx_url_t u;
@@ -577,7 +577,8 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
 	char *p = conf;
 
-	ngx_str_t *field, *value;
+	ngx_str_t *field;
+	const ngx_str_t *value;
 	ngx_conf_post_t *post;
 
 	field = (ngx_str_t *)(p + cmd->offset);
@@ -657,15 +658,15 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 	}
 }
 
-static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
+static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
 {
 	va_list ap;
 	msgpack_object *out;
 	msgpack_object_kv *ptr;
-	msgpack_object_str *str;
+	const msgpack_object_str *str;
 	size_t i;
 	int found;
-	char *name = NULL;
+	const char *name = NULL;
 
 	if (obj->type != MSGPACK_OBJECT_MAP) {
 		return "malformed RPC response, expected a map";
@@ -673,7 +674,7 @@ static char *ether_msgpack_parse_map(msgpack_object *obj, ...)
 
 	va_start(ap, obj);
 	for (;;) {
-		name = va_arg(ap, char *);
+		name = va_arg(ap, const char *);
 		if (!name) {
 			break;
 		}
@@ -727,7 +728,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	msgpack_unpacked und;
 	void *hdr_start;
 	u_char *new_buf;
-	char *err;
+	const char *err;
 	msgpack_object seq, error;
 	struct serf_cmd_st *cmd, b;
 
@@ -855,7 +856,8 @@ static void serf_write_handler(ngx_event_t *wev)
 	ssize_t size;
 	msgpack_sbuffer *sbuf;
 	msgpack_packer *pk;
-	struct serf_cmd_st *cmd, b;
+	struct serf_cmd_st b;
+	const struct serf_cmd_st *cmd;
 
 	c = wev->data;
 	peer = c->data;
@@ -1081,7 +1083,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	msgpack_object event, name, payload = {0};
 	key_st *key;
 	ngx_queue_t *q;
-	char *err;
+	const char *err;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif
@@ -1299,7 +1301,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	msgpack_object *ptr, payload = {0}, type, default_key, keys;
 	key_st *key;
 	ngx_queue_t *q;
-	char *err;
+	const char *err;
 	ngx_buf_t dummy_recv;
 	size_t i;
 	int was_default = 0;
@@ -1502,7 +1504,7 @@ static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize
 	ngx_int_t rc;
 	msgpack_unpacked und;
 	msgpack_object event, members;
-	char *err;
+	const char *err;
 	enum handle_member_resp_body_et todo;
 
 	// {
@@ -1577,7 +1579,7 @@ static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ss
 	ngx_int_t rc;
 	msgpack_unpacked und;
 	msgpack_object members;
-	char *err;
+	const char *err;
 
 	// {
 	// 	"Members": [
@@ -1626,14 +1628,14 @@ static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ss
 	return handle_member_resp_body(c, peer, &members, HANDLE_LIST_MEMBERS);
 }
 
-static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer, msgpack_object *members,
-		enum handle_member_resp_body_et todo)
+static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
+		const msgpack_object *members, enum handle_member_resp_body_et todo)
 {
 	msgpack_object name, addr, tags, status;
-	msgpack_object_kv *ptr_kv;
-	msgpack_object_str *str;
+	const msgpack_object_kv *ptr_kv;
+	const msgpack_object_str *str;
 	ngx_queue_t *q;
-	char *err;
+	const char *err;
 	int skip_member, have_changed, add_member, remove_member, update_member;
 	memc_server_st *server = NULL;
 	unsigned char *s_addr;
@@ -1987,9 +1989,9 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 
 static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
 		EVP_AEAD_CTX *ctx) {
-	SSL_CTX *ssl_ctx;
-	ngx_connection_t *c;
-	peer_st *peer;
+	const SSL_CTX *ssl_ctx;
+	const ngx_connection_t *c;
+	const peer_st *peer;
 	key_st *key;
 	union {
 		struct {
@@ -2042,10 +2044,10 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 }
 
 static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name, EVP_AEAD_CTX *ctx) {
-	SSL_CTX *ssl_ctx;
-	ngx_connection_t *c;
-	peer_st *peer;
-	key_st *key;
+	const SSL_CTX *ssl_ctx;
+	const ngx_connection_t *c;
+	const peer_st *peer;
+	const key_st *key;
 	ngx_queue_t *q;
 #if NGX_DEBUG
 	u_char buf[32];
@@ -2070,7 +2072,7 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 
 		ngx_log_debug3(NGX_LOG_DEBUG_EVENT, c->log, 0,
 			"ssl session ticket decrypt, key: \"%*s\"%s",
-			ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
+			ngx_hex_dump(buf, (u_char *)key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 			(key == peer->default_ticket_key) ? " (default)" : "");
 
 		if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
@@ -2094,8 +2096,8 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 {
-	chash_point_st *first = (chash_point_st *)one;
-	chash_point_st *second = (chash_point_st *)two;
+	const chash_point_st *first = one;
+	const chash_point_st *second = two;
 
 	if (first->hash < second->hash) {
 		return -1;
@@ -2106,7 +2108,7 @@ static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 	}
 }
 
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, chash_point_st *point, uint32_t hash)
+static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *point, uint32_t hash)
 {
 	ngx_uint_t i, j, k;
 
@@ -2237,21 +2239,22 @@ static void memc_write_handler(ngx_event_t *wev)
 	}
 }
 
-static memc_op_st *memc_start_operation(peer_st *peer, protocol_binary_command cmd,
-		ngx_str_t *key, ngx_str_t *value, void *in_data)
+static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
+		const ngx_str_t *key, const ngx_str_t *value, const void *in_data)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL;
 	size_t len, hdr_len, ext_len = 0, body_len;
 	int sock = -1;
 	ngx_connection_t *c = NULL;
-	memc_server_st *server;
+	const memc_server_st *server;
 	ngx_event_t *rev, *wev;
 	ngx_int_t event;
 	uint32_t hash;
 	protocol_binary_request_header *req_hdr;
-	protocol_binary_request_no_extras *in_req = in_data;
-	protocol_binary_request_set *reqs, *in_reqs = in_data;
+	protocol_binary_request_set *reqs;
+	const protocol_binary_request_no_extras *in_req = in_data;
+	const protocol_binary_request_set *in_reqs = in_data;
 #if NGX_DEBUG
 	const char *cmd_str;
 #if !MEMC_KEYS_ARE_HEX
@@ -2464,7 +2467,7 @@ error:
 	return NULL;
 }
 
-static ngx_int_t memc_complete_operation(memc_op_st *op, ngx_str_t *value, void *out_data)
+static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *out_data)
 {
 	ngx_str_t data;
 	unsigned short key_len, status;
@@ -2580,9 +2583,9 @@ static void memc_cleanup_pool_handler(void *data)
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
-	SSL_CTX *ssl_ctx;
-	ngx_connection_t *c;
-	peer_st *peer;
+	const SSL_CTX *ssl_ctx;
+	const ngx_connection_t *c;
+	const peer_st *peer;
 	ngx_str_t key, value = {0};
 	unsigned int len;
 	u_char *session = NULL;
@@ -2648,10 +2651,10 @@ cleanup:
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
 		int *copy)
 {
-	SSL_CTX *ssl_ctx;
-	ngx_connection_t *c;
+	const SSL_CTX *ssl_ctx;
+	const ngx_connection_t *c;
 	memc_op_st *op;
-	peer_st *peer;
+	const peer_st *peer;
 	ngx_str_t key, value;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
@@ -2747,7 +2750,7 @@ cleanup:
 
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 {
-	peer_st *peer;
+	const peer_st *peer;
 	ngx_str_t key;
 	unsigned int len;
 #if MEMC_KEYS_ARE_HEX
