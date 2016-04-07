@@ -1,6 +1,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <openssl/aes.h>
 
 #include <msgpack.h>
 
@@ -77,6 +78,8 @@ typedef struct {
 
 	const EVP_AEAD *aead;
 
+	ngx_atomic_uint_t nonce_seq;
+
 	int was_default;
 
 	ngx_queue_t queue;
@@ -133,6 +136,8 @@ typedef struct _peer_st {
 		ngx_uint_t npoints;
 		chash_point_st *points;
 	} memc;
+
+	AES_KEY nonce_key;
 
 	ngx_msec_t timeout;
 
@@ -406,6 +411,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		uint64_t u64;
 		uint8_t byte[sizeof(uint64_t)];
 	} seq;
+	uint8_t nonce_key[16];
 
 	ssl = ngx_http_conf_get_module_srv_conf(cf, ngx_http_ssl_module);
 
@@ -508,6 +514,16 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	} while (!seq.u64);
 
 	peer->serf.seq = seq.u64;
+
+	if (RAND_bytes(nonce_key, sizeof(nonce_key)) != 1) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "RAND_bytes failed");
+		return NGX_CONF_ERROR;
+	}
+
+	if (AES_set_encrypt_key(nonce_key, sizeof(nonce_key)*8, &peer->nonce_key) < 0) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "AES_set_encrypt_key failed");
+		return NGX_CONF_ERROR;
+	}
 
 	if (g_ssl_ctx_exdata_peer_index == -1) {
 		g_ssl_ctx_exdata_peer_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -1975,6 +1991,13 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 	ngx_connection_t *c;
 	peer_st *peer;
 	key_st *key;
+	union {
+		struct {
+			uint64_t seq;
+			uint8_t rand[EVP_AEAD_MAX_NONCE_LENGTH - sizeof(uint64_t)];
+		};
+		uint8_t byte[EVP_AEAD_MAX_NONCE_LENGTH];
+	} new_nonce;
 #if NGX_DEBUG
 	u_char buf[32];
 #endif
@@ -1997,9 +2020,17 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 		ngx_hex_dump(buf, key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 		SSL_session_reused(ssl_conn) ? "reused" : "new");
 
-	if (RAND_bytes(nonce, EVP_AEAD_nonce_length(key->aead)) != 1) {
+	new_nonce.seq = ngx_atomic_fetch_add(&key->nonce_seq, 1);
+
+	if (RAND_bytes(new_nonce.rand, sizeof(new_nonce.rand)) != 1) {
 		return -1;
 	}
+
+#if EVP_AEAD_MAX_NONCE_LENGTH != AES_BLOCK_SIZE
+#	error EVP_AEAD_MAX_NONCE_LENGTH is not equal to AES_BLOCK_SIZE
+#endif
+	AES_ecb_encrypt(new_nonce.byte, new_nonce.byte, &peer->nonce_key, AES_ENCRYPT);
+	ngx_memcpy(nonce, new_nonce.byte, EVP_AEAD_nonce_length(key->aead));
 
 	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
 			EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
