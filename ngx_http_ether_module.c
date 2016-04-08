@@ -730,7 +730,8 @@ static void serf_read_handler(ngx_event_t *rev)
 	u_char *new_buf;
 	const char *err;
 	msgpack_object seq, error;
-	struct serf_cmd_st *cmd, b;
+	struct serf_cmd_st b;
+	const struct serf_cmd_st *cmd;
 
 	c = rev->data;
 	peer = c->data;
@@ -928,8 +929,7 @@ static void serf_write_handler(ngx_event_t *wev)
 
 static int serf_cmd_state_cmp(const void *in_a, const void *in_b)
 {
-	const struct serf_cmd_st *a = in_a;
-	const struct serf_cmd_st *b = in_b;
+	const struct serf_cmd_st *a = in_a, *b = in_b;
 
 	if (a->state > b->state) {
 		return 1;
@@ -2096,8 +2096,7 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 {
-	const chash_point_st *first = one;
-	const chash_point_st *second = two;
+	const chash_point_st *first = one, *second = two;
 
 	if (first->hash < second->hash) {
 		return -1;
@@ -2588,11 +2587,10 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	const peer_st *peer;
 	ngx_str_t key, value = {0};
 	unsigned int len;
-	u_char *session = NULL;
-	size_t session_len, out_len;
 	EVP_AEAD_CTX aead_ctx;
 	CBB cbb;
-	u_char *name, *nonce, *p;
+	u_char *session = NULL, *name, *nonce, *p;
+	size_t session_len, out_len;
 #if MEMC_KEYS_ARE_HEX
 	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 #endif /* MEMC_KEYS_ARE_HEX */
