@@ -12,11 +12,13 @@
 #define INSTALL_KEY_EVENT "install-key"
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
-
-#define RETRIEVE_KEYS_QUERY "retrieve-keys"
+#define WIPE_KEYS_EVENT "wipe-keys"
 
 #define STREAM_KEY_EVENTS \
-	("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT ",user:" SET_DEFAULT_KEY_EVENT)
+	("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT \
+	",user:" SET_DEFAULT_KEY_EVENT ",user:" WIPE_KEYS_EVENT)
+
+#define RETRIEVE_KEYS_QUERY "retrieve-keys"
 
 #define MEMC_SERVER_TAG_KEY "role"
 #define MEMC_SERVER_TAG_VAL "memc"
@@ -1082,8 +1084,9 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	msgpack_unpacked und;
 	msgpack_object event, name, payload = {0};
 	key_st *key;
-	ngx_queue_t *q;
+	ngx_queue_t *q, *prev_q;
 	const char *err;
+	size_t num;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif
@@ -1117,7 +1120,6 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 
 	event.type = MSGPACK_OBJECT_STR;
 	name.type = MSGPACK_OBJECT_STR;
-	payload.type = MSGPACK_OBJECT_BIN;
 
 	err = ether_msgpack_parse_map(&und.data,
 		"Event", &event, "Name", &name, "Payload", &payload,
@@ -1133,6 +1135,44 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			"received unrecognised event from serf: %*s",
 			event.via.str.size, event.via.str.ptr);
 		return NGX_ERROR;
+	}
+
+	if (ngx_strncmp(name.via.str.ptr, WIPE_KEYS_EVENT, name.via.str.size) == 0) {
+		num = 0;
+
+		for (q = ngx_queue_head(&peer->ticket_keys);
+			q != ngx_queue_sentinel(&peer->ticket_keys);
+			q = ngx_queue_next(q)) {
+			num++;
+		}
+
+		ngx_log_error(NGX_LOG_INFO, c->log, 0, WIPE_KEYS_EVENT " event: removing %d keys, " \
+			"session ticket and cache support disabled", num);
+
+		SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
+		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
+
+		peer->default_ticket_key = NULL;
+
+		for (q = ngx_queue_head(&peer->ticket_keys);
+			q != ngx_queue_sentinel(&peer->ticket_keys);
+			q = ngx_queue_next(q)) {
+			key = ngx_queue_data(q, key_st, queue);
+
+			prev_q = ngx_queue_prev(q);
+			ngx_queue_remove(q);
+			q = prev_q;
+
+			ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
+			ngx_pfree(c->pool, key); // is this the right pool?
+		}
+
+		return NGX_OK;
+	}
+
+	if (payload.type != MSGPACK_OBJECT_BIN) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0, "malformed RPC response, wrong type given");
+		goto error;
 	}
 
 	if (ngx_strncmp(name.via.str.ptr, INSTALL_KEY_EVENT, name.via.str.size) == 0) {
@@ -1269,8 +1309,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 
 #if NGX_DEBUG
-	{
-	size_t num = 0;
+	num = 0;
 
 	for (q = ngx_queue_head(&peer->ticket_keys);
 		q != ngx_queue_sentinel(&peer->ticket_keys);
@@ -1279,7 +1318,6 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 
 	ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
-	}
 #endif
 
 	ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
