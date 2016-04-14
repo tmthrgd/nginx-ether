@@ -2031,8 +2031,7 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 #if EVP_AEAD_MAX_NONCE_LENGTH != AES_BLOCK_SIZE
 #	error EVP_AEAD_MAX_NONCE_LENGTH is not equal to AES_BLOCK_SIZE
 #endif
-	AES_ecb_encrypt(new_nonce.byte, new_nonce.byte, &peer->nonce_key, AES_ENCRYPT);
-	ngx_memcpy(nonce, new_nonce.byte, EVP_AEAD_nonce_length(key->aead));
+	AES_ecb_encrypt(new_nonce.byte, nonce, &peer->nonce_key, AES_ENCRYPT);
 
 	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
 			EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
