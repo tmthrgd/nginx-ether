@@ -1838,7 +1838,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			}
 		}
 
-		if (update_member || skip_member) {
+		if (skip_member) {
 			continue;
 		}
 
