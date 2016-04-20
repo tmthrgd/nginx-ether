@@ -40,13 +40,14 @@
 #define SERF_SEQ_STATE_MASK 0x0f
 
 #if !NGX_HTTP_ETHER_HAVE_HTONLL
-#if NGX_HAVE_LITTLE_ENDIAN
-int64_t htonll(int64_t in);
-int64_t ntohll(int64_t in);
-#else /* NGX_HAVE_LITTLE_ENDIAN */
-#define htonll(n) (n)
-#define ntohll(n) (n)
-#endif /* NGX_HAVE_LITTLE_ENDIAN */
+#	if NGX_HAVE_LITTLE_ENDIAN
+#		include <byteswap.h>
+#		define htonll(n) bswap_64((n))
+#		define ntohll(n) bswap_64((n))
+#	else /* NGX_HAVE_LITTLE_ENDIAN */
+#		define htonll(n) (n)
+#		define ntohll(n) (n)
+#	endif /* NGX_HAVE_LITTLE_ENDIAN */
 #endif /* !NGX_HTTP_ETHER_HAVE_HTONLL */
 
 typedef struct _peer_st peer_st;
@@ -2805,33 +2806,3 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
 }
-
-#if !NGX_HTTP_ETHER_HAVE_HTONLL && NGX_HAVE_LITTLE_ENDIAN
-int64_t htonll(int64_t in)
-{
-	union {
-		int64_t i64;
-		int32_t i32[2];
-	} u;
-	u.i64 = in;
-
-	int32_t temp = u.i32[0];
-	u.i32[0] = htonl(u.i32[1]);
-	u.i32[1] = htonl(temp);
-	return u.i64;
-}
-
-int64_t ntohll(int64_t in)
-{
-	union {
-		int64_t i64;
-		int32_t i32[2];
-	} u;
-	u.i64 = in;
-
-	int32_t temp = u.i32[0];
-	u.i32[0] = ntohl(u.i32[1]);
-	u.i32[1] = ntohl(temp);
-	return u.i64;
-}
-#endif /* !NGX_HTTP_ETHER_HAVE_HTONLL && NGX_HAVE_LITTLE_ENDIAN */
