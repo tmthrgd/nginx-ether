@@ -1848,12 +1848,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	update_member:
 		have_changed = 1;
 
-		/* IPv4 in IPv6 prefix: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff */
-		if (addr.via.bin.size == 16
-			&& *(uint64_t *)&addr.via.bin.ptr[ 0] == 0
-			&& *(uint16_t *)&addr.via.bin.ptr[ 8] == 0
-			&& *(uint16_t *)&addr.via.bin.ptr[10] == 0xFFFF) {
-			/* strip 12 byte prefix */
+		if (addr.via.bin.size == 16 && IN6_IS_ADDR_V4MAPPED(addr.via.bin.ptr)) {
+			/* strip 12 byte IPv4 in IPv6 prefix: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff */
 			addr.via.bin.ptr += 12;
 			addr.via.bin.size -= 12;
 		}
