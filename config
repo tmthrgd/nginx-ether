@@ -1,5 +1,15 @@
 ngx_addon_name=ngx_ether
 
+ngx_feature="htonll and ntohll"
+ngx_feature_libs=
+ngx_feature_name="NGX_HTTP_ETHER_HAVE_HTONLL"
+ngx_feature_run=no
+ngx_feature_incs="#include <netinet/in.h>"
+ngx_feature_path=
+ngx_feature_test='htonll(0); ntohll(0);'
+
+. auto/feature
+
 if [ -n "$ngx_module_link" ]; then
 	# nginx-1.9.11+
 	ngx_module_type=HTTP

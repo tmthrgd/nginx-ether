@@ -39,7 +39,7 @@
 
 #define SERF_SEQ_STATE_MASK 0x0f
 
-#ifndef HAVE_HTONLL
+#if !NGX_HTTP_ETHER_HAVE_HTONLL
 #if NGX_HAVE_LITTLE_ENDIAN
 int64_t htonll(int64_t in);
 int64_t ntohll(int64_t in);
@@ -47,7 +47,7 @@ int64_t ntohll(int64_t in);
 #define htonll(n) (n)
 #define ntohll(n) (n)
 #endif /* NGX_HAVE_LITTLE_ENDIAN */
-#endif /* HAVE_HTONLL */
+#endif /* !NGX_HTTP_ETHER_HAVE_HTONLL */
 
 typedef struct _peer_st peer_st;
 
@@ -2806,7 +2806,7 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
 }
 
-#if !defined(HAVE_HTONLL) && NGX_HAVE_LITTLE_ENDIAN
+#if !NGX_HTTP_ETHER_HAVE_HTONLL && NGX_HAVE_LITTLE_ENDIAN
 int64_t htonll(int64_t in)
 {
 	union {
@@ -2834,4 +2834,4 @@ int64_t ntohll(int64_t in)
 	u.i32[1] = ntohl(temp);
 	return u.i64;
 }
-#endif /* !defined(HAVE_HTONLL) && NGX_HAVE_LITTLE_ENDIAN */
+#endif /* !NGX_HTTP_ETHER_HAVE_HTONLL && NGX_HAVE_LITTLE_ENDIAN */
