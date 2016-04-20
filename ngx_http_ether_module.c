@@ -1383,9 +1383,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	if (ngx_strncmp(type.via.str.ptr, "ack", type.via.str.size) == 0
 		|| ngx_strncmp(type.via.str.ptr, "done", type.via.str.size) == 0) {
 		return NGX_OK;
-	}
-
-	if (ngx_strncmp(type.via.str.ptr, "response", type.via.str.size) != 0) {
+	} else if (ngx_strncmp(type.via.str.ptr, "response", type.via.str.size) != 0) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"received unrecognised query response type from serf: %*s",
 			type.via.str.size, type.via.str.ptr);
