@@ -1673,7 +1673,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	const msgpack_object_str *str;
 	ngx_queue_t *q;
 	const char *err;
-	int skip_member, have_changed, add_member, remove_member, update_member;
+	int skip_member, have_changed, add_member, remove_member, update_member, insert_member;
 	memc_server_st *server = NULL;
 	unsigned char *s_addr;
 	uint32_t hash, base_hash;
@@ -1816,6 +1816,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			continue;
 		}
 
+		insert_member = 1;
+
 		for (q = ngx_queue_head(&peer->memc.servers);
 			q != ngx_queue_sentinel(&peer->memc.servers);
 			q = ngx_queue_next(q)) {
@@ -1830,11 +1832,12 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 						(todo == HANDLE_LIST_MEMBERS) ? "members-filtered"
 							: MEMBER_JOIN_EVENT " event");
 					skip_member = 1;
-					break;
+				} else {
+					/* update_member */
+					insert_member = 0;
 				}
 
-				/* update_member */
-				goto update_member;
+				break;
 			}
 		}
 
@@ -1842,11 +1845,11 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			continue;
 		}
 
-		/* add_member */
-		server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
-
-	update_member:
 		have_changed = 1;
+
+		if (insert_member) {
+			server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
+		}
 
 		if (addr.via.bin.size == 16 && IN6_IS_ADDR_V4MAPPED(addr.via.bin.ptr)) {
 			/* strip 12 byte IPv4 in IPv6 prefix: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff */
@@ -1886,7 +1889,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
 
-		if (!add_member) {
+		if (!insert_member) {
 			continue;
 		}
 
