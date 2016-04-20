@@ -1790,32 +1790,6 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			}
 		}
 
-		if ((update_member && skip_member) || remove_member) {
-			for (q = ngx_queue_head(&peer->memc.servers);
-				q != ngx_queue_sentinel(&peer->memc.servers);
-				q = ngx_queue_next(q)) {
-				server = ngx_queue_data(q, memc_server_st, queue);
-
-				if (server->name.len != name.via.str.size
-					|| ngx_memcmp(name.via.str.ptr, server->name.data,
-						server->name.len) != 0) {
-					continue;
-				}
-
-				have_changed = 1;
-
-				ngx_queue_remove(q);
-				ngx_pfree(c->pool, server); // is this the right pool?
-				break;
-			}
-
-			continue;
-		}
-
-		if (skip_member) {
-			continue;
-		}
-
 		insert_member = 1;
 
 		for (q = ngx_queue_head(&peer->memc.servers);
@@ -1823,25 +1797,33 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			q = ngx_queue_next(q)) {
 			server = ngx_queue_data(q, memc_server_st, queue);
 
-			if (server->name.len == name.via.str.size
-				&& ngx_memcmp(name.via.str.ptr, server->name.data,
-					server->name.len) == 0) {
-				if (add_member) {
-					ngx_log_error(NGX_LOG_INFO, c->log, 0,
-						"skipping add of existing memcached server in %s",
-						(todo == HANDLE_LIST_MEMBERS) ? "members-filtered"
-							: MEMBER_JOIN_EVENT " event");
-					skip_member = 1;
-				} else {
-					/* update_member */
-					insert_member = 0;
-				}
-
-				break;
+			if (server->name.len != name.via.str.size
+				|| ngx_memcmp(name.via.str.ptr, server->name.data,
+					server->name.len) != 0) {
+				continue;
 			}
+
+			if (add_member) {
+				ngx_log_error(NGX_LOG_INFO, c->log, 0,
+					"skipping add of existing memcached server in %s",
+					(todo == HANDLE_LIST_MEMBERS) ? "members-filtered"
+						: MEMBER_JOIN_EVENT " event");
+
+				skip_member = 1;
+			} else if ((update_member && skip_member) || remove_member) {
+				have_changed = 1;
+
+				ngx_queue_remove(q);
+				ngx_pfree(c->pool, server); // is this the right pool?
+			} else {
+				/* update_member */
+				insert_member = 0;
+			}
+
+			break;
 		}
 
-		if (skip_member) {
+		if (skip_member || remove_member) {
 			continue;
 		}
 
