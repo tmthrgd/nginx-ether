@@ -1678,7 +1678,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	uint32_t hash, base_hash;
 	union {
 		uint32_t value;
-		u_char byte[4];
+		u_char byte[sizeof(uint32_t)];
 	} prev_hash;
 	ngx_int_t rc;
 	unsigned short port;
