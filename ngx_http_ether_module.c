@@ -567,10 +567,9 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	if (ssl->session_timeout > REALTIME_MAXDELTA) {
 		ngx_log_error(NGX_LOG_WARN, cf->log, 0,
-			"session_timeout cannot be greater than %d seconds, was %d seconds",
+			"memcached does not support timeouts greater than %d seconds, " \
+			"session_timeout of %d seconds will be capped",
 			REALTIME_MAXDELTA, ssl->session_timeout);
-
-		ssl->session_timeout = REALTIME_MAXDELTA;
 	}
 
 	return NGX_CONF_OK;
@@ -2649,7 +2648,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 #endif /* MEMC_KEYS_ARE_HEX */
 
 	ngx_memzero(&req, sizeof(protocol_binary_request_set));
-	req.message.body.expiration = SSL_SESSION_get_timeout(sess);
+	req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
 
