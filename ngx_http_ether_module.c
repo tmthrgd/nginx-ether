@@ -800,7 +800,8 @@ static void serf_read_handler(ngx_event_t *rev)
 		case NGX_AGAIN:
 			goto cleanup;
 		case NGX_ABORT:
-			exit(2); // something else?
+			assert(!"ether_msgpack_parse returned NGX_ABORT");
+			goto done;
 		default: /* NGX_ERROR */
 			goto done;
 	}
@@ -839,7 +840,8 @@ static void serf_read_handler(ngx_event_t *rev)
 			peer->serf.recv.pos = hdr_start;
 			goto cleanup;
 		case NGX_ABORT:
-			exit(2); // something else?
+			assert(!"cmd->handle_serf_resp returned NGX_ABORT");
+			break;
 		default: /* NGX_OK || NGX_ERROR */
 			break;
 	}
