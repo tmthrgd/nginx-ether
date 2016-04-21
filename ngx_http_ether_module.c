@@ -2649,7 +2649,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 #endif /* MEMC_KEYS_ARE_HEX */
 
 	ngx_memzero(&req, sizeof(protocol_binary_request_set));
-	req.message.body.expiration = peer->ssl->session_timeout;
+	req.message.body.expiration = SSL_SESSION_get_timeout(sess);
 
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
 
