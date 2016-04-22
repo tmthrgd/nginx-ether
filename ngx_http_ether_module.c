@@ -1676,7 +1676,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	const char *err;
 	int skip_member, have_changed, add_member, remove_member, update_member, insert_member;
 	memc_server_st *server = NULL;
-	unsigned char *s_addr;
+	void *s_addr;
 	uint32_t hash, base_hash;
 	union {
 		uint32_t value;
@@ -1844,7 +1844,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			case 4:
 				server->sin.sin_family = AF_INET;
 				server->sin.sin_port = htons(port);
-				s_addr = (unsigned char *)&server->sin.sin_addr.s_addr;
+				s_addr = &server->sin.sin_addr.s_addr;
 
 				server->addr_len = sizeof(struct sockaddr_in);
 				break;
@@ -1852,7 +1852,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			case 16:
 				server->sin6.sin6_family = AF_INET6;
 				server->sin6.sin6_port = htons(port);
-				s_addr = &server->sin6.sin6_addr.s6_addr[0];
+				s_addr = server->sin6.sin6_addr.s6_addr;
 
 				server->addr_len = sizeof(struct sockaddr_in6);
 				break;
@@ -1919,12 +1919,12 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		switch (server->addr.sa_family) {
 #if NGX_HAVE_INET6
 			case AF_INET6:
-				s_addr = &server->sin6.sin6_addr.s6_addr[0];
+				s_addr = server->sin6.sin6_addr.s6_addr;
 				port = ntohs(server->sin6.sin6_port);
 				break;
 #endif /* NGX_HAVE_INET6 */
 			default: /* AF_INET */
-				s_addr = (unsigned char *)&server->sin.sin_addr.s_addr;
+				s_addr = &server->sin.sin_addr.s_addr;
 				port = ntohs(server->sin.sin_port);
 				break;
 		}
