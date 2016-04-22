@@ -355,7 +355,7 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 
 		/* The kqueue's loop interface needs it. */
 		if (rc == NGX_OK) {
-			c->write->handler(c->write);
+			wev->handler(wev);
 		}
 	}
 
