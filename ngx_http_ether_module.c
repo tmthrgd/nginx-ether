@@ -2285,15 +2285,15 @@ static void memc_read_handler(ngx_event_t *rev)
 	if (size > 0) {
 		recv.last += size;
 	} else if (size == 0 || size == NGX_AGAIN) {
-		return;
+		goto cleanup;
 	} else {
 		c->error = 1;
-		return;
+		goto cleanup;
 	}
 
 	if (recv.last - recv.pos < 8) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "truncated memc packet");
-		return;
+		goto cleanup;
 	}
 
 	// op->recv.pos[0..1] = request id
@@ -2328,9 +2328,10 @@ static void memc_read_handler(ngx_event_t *rev)
 		return;
 	}
 
-	ngx_pfree(c->pool, recv.start);
-
 	ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid memc id: %ud", id.u16);
+
+cleanup:
+	ngx_pfree(c->pool, recv.start);
 }
 
 static void memc_write_handler(ngx_event_t *wev)
