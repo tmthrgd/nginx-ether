@@ -1981,8 +1981,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
 		server->name.len = name.via.str.size;
 
-		ngx_memcpy(server->name.data, name.via.str.ptr, name.via.str.size);
-		server->name.data[server->name.len] = '\0';
+		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 
 		ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
 	}
