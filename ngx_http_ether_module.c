@@ -2031,7 +2031,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		ngx_crc32_update(&base_hash, (u_char *)"", 1);
 
 		if (port == 11211) {
-			ngx_crc32_update(&base_hash, (u_char *)"11211", strlen("11211") - 1);
+			ngx_crc32_update(&base_hash, (u_char *)"11211", sizeof("11211") - 1);
 		} else {
 			ngx_crc32_update(&base_hash, str_port,
 				snprintf((char *)str_port, sizeof("65535") - 1, "%hu", port));
