@@ -2487,16 +2487,12 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		req_hdr->request.opaque = in_req->message.header.request.opaque;
 		req_hdr->request.cas = htonll(in_req->message.header.request.cas);
 
-		switch (cmd) {
-			case PROTOCOL_BINARY_CMD_SET:
-				reqs = (protocol_binary_request_set *)req_hdr;
-				reqs->message.body.flags
-					= htonl(in_reqs->message.body.flags);
-				reqs->message.body.expiration
-					= htonl(in_reqs->message.body.expiration);
-				break;
-			default:
-				break;
+		if (cmd == PROTOCOL_BINARY_CMD_SET) {
+			reqs = (protocol_binary_request_set *)req_hdr;
+			reqs->message.body.flags
+				= htonl(in_reqs->message.body.flags);
+			reqs->message.body.expiration
+				= htonl(in_reqs->message.body.expiration);
 		}
 	}
 
@@ -2614,13 +2610,9 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 		out_res->message.header.response.opaque = res_hdr->response.opaque;
 		out_res->message.header.response.cas = ntohll(res_hdr->response.cas);
 
-		switch (res_hdr->response.opcode) {
-			case PROTOCOL_BINARY_CMD_GET:
-				resg = (protocol_binary_response_get *)res_hdr;
-				out_resg->message.body.flags = ntohl(resg->message.body.flags);
-				break;
-			default:
-				break;
+		if (res_hdr->response.opcode == PROTOCOL_BINARY_CMD_GET) {
+			resg = (protocol_binary_response_get *)res_hdr;
+			out_resg->message.body.flags = ntohl(resg->message.body.flags);
 		}
 	}
 
