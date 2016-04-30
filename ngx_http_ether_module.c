@@ -55,7 +55,6 @@ typedef struct _peer_st peer_st;
 typedef struct {
 	ngx_str_t serf_address;
 	ngx_str_t serf_auth;
-	ngx_msec_t timeout;
 } srv_conf_t;
 
 typedef enum {
@@ -151,8 +150,6 @@ typedef struct _peer_st {
 	} memc;
 
 	AES_KEY nonce_key;
-
-	ngx_msec_t timeout;
 
 	ngx_pool_t *pool;
 	ngx_log_t *log;
@@ -286,13 +283,6 @@ static ngx_command_t module_commands[] = {
 	  offsetof(srv_conf_t, serf_auth),
 	  NULL },
 
-	{ ngx_string("ether_timeout"),
-	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
-	  ngx_conf_set_msec_slot,
-	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(srv_conf_t, timeout),
-	  NULL },
-
 	ngx_null_command
 };
 
@@ -358,10 +348,6 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		rev->handler = serf_read_handler;
 		wev->handler = serf_write_handler;
 
-		if (peer[i].timeout) {
-			// set timeout
-		}
-
 		/* The kqueue's loop interface needs it. */
 		if (rc == NGX_OK) {
 			wev->handler(wev);
@@ -416,8 +402,6 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	 *     escf->serf_auth = { 0, NULL };
 	 */
 
-	escf->timeout = NGX_CONF_UNSET_MSEC;
-
 	return escf;
 }
 
@@ -439,12 +423,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	ngx_conf_merge_str_value(conf->serf_address, prev->serf_address, "");
 	ngx_conf_merge_str_value(conf->serf_auth, prev->serf_auth, "");
-	ngx_conf_merge_msec_value(conf->timeout, prev->timeout, NGX_CONF_UNSET_MSEC);
-
-	if (conf->timeout != NGX_CONF_UNSET_MSEC) {
-		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ether_timeout directive not implemented");
-		return NGX_CONF_ERROR;
-	}
 
 	if (!conf->serf_address.len || ngx_strcmp(conf->serf_address.data, "off") == 0) {
 		return NGX_CONF_OK;
@@ -502,10 +480,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	peer->serf.auth.len = conf->serf_auth.len;
 
 	ngx_queue_init(&peer->memc.servers);
-
-	if (conf->timeout != NGX_CONF_UNSET_MSEC) {
-		peer->timeout = conf->timeout;
-	}
 
 	peer->pool = cf->cycle->pool;
 	peer->log = cf->cycle->log;
