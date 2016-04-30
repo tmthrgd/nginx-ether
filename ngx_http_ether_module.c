@@ -55,6 +55,8 @@ typedef struct _peer_st peer_st;
 typedef struct {
 	ngx_str_t serf_address;
 	ngx_str_t serf_auth;
+
+	peer_st *peer;
 } srv_conf_t;
 
 typedef enum {
@@ -180,7 +182,8 @@ enum handle_member_resp_body_et {
 };
 
 static ngx_int_t init_process(ngx_cycle_t *cycle);
-static void exit_process(ngx_cycle_t *cycle);
+
+static void cleanup_peer(void *data);
 
 static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -234,8 +237,6 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
 		int *copy);
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
-
-static ngx_array_t peers = {0};
 
 static int g_ssl_ctx_exdata_peer_index = -1;
 static int g_ssl_exdata_memc_op_index = -1;
@@ -310,23 +311,32 @@ ngx_module_t ngx_http_ether_module = {
 	init_process,    /* init process */
 	NULL,            /* init thread */
 	NULL,            /* exit thread */
-	exit_process,    /* exit process */
+	NULL,            /* exit process */
 	NULL,            /* exit master */
 	NGX_MODULE_V1_PADDING
 };
 
 static ngx_int_t init_process(ngx_cycle_t *cycle)
 {
+	ngx_http_core_main_conf_t *cmcf;
+	ngx_http_core_srv_conf_t **cscfp;
+	srv_conf_t *conf;
 	ngx_connection_t *c;
-	peer_st *peer;
 	ngx_peer_connection_t *pc;
-	size_t i;
 	ngx_int_t rc;
 	ngx_event_t *rev, *wev;
+	ngx_uint_t i;
 
-	peer = peers.elts;
-	for (i = 0; i < peers.nelts; i++) {
-		pc = &peer[i].serf.pc;
+	cmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_core_module);
+
+	cscfp = cmcf->servers.elts;
+	for (i = 0; i < cmcf->servers.nelts; i++) {
+		conf = ngx_http_conf_get_module_srv_conf(cscfp[i], ngx_http_ether_module);
+		if (!conf || !conf->peer) {
+			continue;
+		}
+
+		pc = &conf->peer->serf.pc;
 
 		rc = ngx_event_connect_peer(pc);
 		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
@@ -335,7 +345,7 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		}
 
 		c = pc->connection;
-		c->data = &peer[i];
+		c->data = conf->peer;
 
 		rev = c->read;
 		wev = c->write;
@@ -357,32 +367,28 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 	return NGX_OK;
 }
 
-static void exit_process(ngx_cycle_t *cycle)
+static void cleanup_peer(void *data)
 {
-	peer_st *peer;
+	peer_st *peer = data;
 	ngx_peer_connection_t *pc;
 	ngx_connection_t *c;
-	size_t i;
 	ngx_queue_t *q;
 	memc_server_st *server;
 
-	peer = peers.elts;
-	for (i = 0; i < peers.nelts; i++) {
-		pc = &peer[i].serf.pc;
+	pc = &peer->serf.pc;
 
-		c = pc->connection;
-		if (c) {
-			ngx_close_connection(c);
-			pc->connection = NULL;
-		}
+	c = pc->connection;
+	if (c) {
+		ngx_close_connection(c);
+		pc->connection = NULL;
+	}
 
-		for (q = ngx_queue_head(&peer->memc.servers);
-			q != ngx_queue_sentinel(&peer->memc.servers);
-			q = ngx_queue_next(q)) {
-			server = ngx_queue_data(q, memc_server_st, queue);
+	for (q = ngx_queue_head(&peer->memc.servers);
+		q != ngx_queue_sentinel(&peer->memc.servers);
+		q = ngx_queue_next(q)) {
+		server = ngx_queue_data(q, memc_server_st, queue);
 
-			ngx_close_connection(server->c);
-		}
+		ngx_close_connection(server->c);
 	}
 }
 
@@ -412,6 +418,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	ngx_http_ssl_srv_conf_t *ssl;
 	ngx_url_t u;
 	peer_st *peer;
+	ngx_pool_cleanup_t *cln;
 	ngx_peer_connection_t *pc;
 	union {
 		uint64_t u64;
@@ -462,19 +469,20 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		return NGX_CONF_ERROR;
 	}
 
-	if (!peers.elts) {
-		if (ngx_array_init(&peers, cf->cycle->pool, 16, sizeof(peer_st)) != NGX_OK) {
-			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ngx_array_init failed");
-			return NGX_CONF_ERROR;
-		}
-	}
-
-	peer = ngx_array_push(&peers);
+	peer = ngx_pcalloc(cf->cycle->pool, sizeof(peer_st));
 	if (!peer) {
 		return NGX_CONF_ERROR;
 	}
 
-	ngx_memzero(peer, sizeof(peer_st));
+	cln = ngx_pool_cleanup_add(cf->cycle->pool, 0);
+	if (!cln) {
+		return NGX_CONF_ERROR;
+	}
+
+	cln->handler = cleanup_peer;
+	cln->data = peer;
+
+	conf->peer = peer;
 
 	peer->serf.auth.data = conf->serf_auth.data;
 	peer->serf.auth.len = conf->serf_auth.len;
