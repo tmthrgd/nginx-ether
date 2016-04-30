@@ -2695,40 +2695,36 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
-	if (!SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)
-		|| !CBB_init(&cbb, SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH + session_len
+	if (SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)
+		&& CBB_init(&cbb, SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH + session_len
 				+ EVP_AEAD_MAX_OVERHEAD)
-		|| !CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
-		|| !CBB_reserve(&cbb, &nonce, EVP_AEAD_MAX_NONCE_LENGTH)
-		|| session_ticket_key_enc(ssl_conn, name, nonce, &aead_ctx) < 0
-		|| !CBB_did_write(&cbb, EVP_AEAD_nonce_length(aead_ctx.aead))
-		|| !CBB_reserve(&cbb, &p, session_len + EVP_AEAD_max_overhead(aead_ctx.aead))
-		|| !EVP_AEAD_CTX_seal(&aead_ctx,
+		&& CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
+		&& CBB_reserve(&cbb, &nonce, EVP_AEAD_MAX_NONCE_LENGTH)
+		&& session_ticket_key_enc(ssl_conn, name, nonce, &aead_ctx) >= 0
+		&& CBB_did_write(&cbb, EVP_AEAD_nonce_length(aead_ctx.aead))
+		&& CBB_reserve(&cbb, &p, session_len + EVP_AEAD_max_overhead(aead_ctx.aead))
+		&& EVP_AEAD_CTX_seal(&aead_ctx,
 				p, &out_len, session_len + EVP_AEAD_max_overhead(aead_ctx.aead),
 				nonce, EVP_AEAD_nonce_length(aead_ctx.aead),
 				session, session_len, key.data, key.len)
-		|| !CBB_did_write(&cbb, out_len)
-		|| !CBB_finish(&cbb, &value.data, &value.len)) {
-		goto cleanup;
-	}
-
+		&& CBB_did_write(&cbb, out_len)
+		&& CBB_finish(&cbb, &value.data, &value.len)) {
 #if MEMC_KEYS_ARE_HEX
-	key.len = ngx_hex_dump(hex, key.data, key.len) - hex;
-	key.data = hex;
+		key.len = ngx_hex_dump(hex, key.data, key.len) - hex;
+		key.data = hex;
 #endif /* MEMC_KEYS_ARE_HEX */
 
-	ngx_memzero(&req, sizeof(protocol_binary_request_set));
-	req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
+		ngx_memzero(&req, sizeof(protocol_binary_request_set));
+		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
+		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
+	}
 
-cleanup:
 	OPENSSL_free(session);
 	OPENSSL_free(value.data);
 	CBB_cleanup(&cbb);
 
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
-
 	return 0;
 }
 
