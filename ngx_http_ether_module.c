@@ -224,7 +224,6 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		const ngx_str_t *key, const ngx_str_t *value, const void *data);
 static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
-static void memc_cleanup_pool_handler(void *data);
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
@@ -2674,13 +2673,6 @@ static void memc_cleanup_operation(memc_op_st *op)
 	ngx_pfree(op->peer->pool, op);
 }
 
-static void memc_cleanup_pool_handler(void *data)
-{
-	memc_op_st *op = data;
-
-	memc_cleanup_operation(op);
-}
-
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
 	const SSL_CTX *ssl_ctx;
@@ -2802,7 +2794,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 			goto cleanup;
 		}
 
-		cln->handler = memc_cleanup_pool_handler;
+		cln->handler = (ngx_pool_cleanup_pt)memc_cleanup_operation;
 		cln->data = op;
 
 		return SSL_magic_pending_session_ptr();
