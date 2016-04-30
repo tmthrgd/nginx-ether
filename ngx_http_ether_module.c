@@ -1088,7 +1088,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	size_t num;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
-#endif
+#endif /* NGX_DEBUG */
 
 	// {
 	// 	"Event": "user",
@@ -1317,7 +1317,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	}
 
 	ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
-#endif
+#endif /* NGX_DEBUG */
 
 	ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
 
@@ -1344,7 +1344,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	int was_default = 0;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
-#endif
+#endif /* NGX_DEBUG */
 
 	// {
 	// 	"Type": "response",
@@ -1518,7 +1518,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 
 	ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "ssl session ticket key have %d keys", num);
 	}
-#endif
+#endif /* NGX_DEBUG */
 
 	if (payload.via.bin.size) {
 		ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
@@ -2103,7 +2103,7 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 	} new_nonce;
 #if NGX_DEBUG
 	u_char buf[32];
-#endif
+#endif /* NGX_DEBUG */
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -2131,7 +2131,7 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 
 #if EVP_AEAD_MAX_NONCE_LENGTH != AES_BLOCK_SIZE
 #	error EVP_AEAD_MAX_NONCE_LENGTH is not equal to AES_BLOCK_SIZE
-#endif
+#endif /* EVP_AEAD_MAX_NONCE_LENGTH != AES_BLOCK_SIZE */
 	AES_ecb_encrypt(new_nonce.byte, nonce, &peer->nonce_key, AES_ENCRYPT);
 
 	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
@@ -2151,7 +2151,7 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 	ngx_queue_t *q;
 #if NGX_DEBUG
 	u_char buf[32];
-#endif
+#endif /* NGX_DEBUG */
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -2389,7 +2389,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 #if NGX_DEBUG
 			cmd_str = "GET";
-#endif
+#endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_SET:
 			len += sizeof(protocol_binary_request_set);
@@ -2397,14 +2397,14 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 #if NGX_DEBUG
 			cmd_str = "SET";
-#endif
+#endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_DELETE:
 			len += sizeof(protocol_binary_request_delete);
 
 #if NGX_DEBUG
 			cmd_str = "DELETE";
-#endif
+#endif /* NGX_DEBUG */
 			break;
 		default:
 			goto error;
