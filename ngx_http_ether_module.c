@@ -2556,12 +2556,6 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	ngx_uint_t log_level;
 	protocol_binary_response_no_extras *out_res = out_data;
 	protocol_binary_response_get *resg, *out_resg = out_data;
-#if NGX_DEBUG
-	union {
-		uint16_t u16;
-		uint8_t byte[2];
-	} id;
-#endif /* NGX_DEBUG */
 
 	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
 		return NGX_ERROR;
@@ -2572,10 +2566,7 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	// op->recv.pos[4..5] = total datagrams
 	// op->recv.pos[6..7] = reserved
 
-#if NGX_DEBUG
-	ngx_memcpy(id.byte, op->recv.pos, sizeof(id.byte));
-	assert(op->id == id.u16);
-#endif /* NGX_DEBUG */
+	assert(op->id == *(uint16_t *)&op->recv.pos[0]);
 
 	if (op->recv.pos[4] != 0 || op->recv.pos[5] != 1) {
 		return NGX_ERROR;
