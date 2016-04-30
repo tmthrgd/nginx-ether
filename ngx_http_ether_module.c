@@ -1163,7 +1163,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			q = prev_q;
 
 			ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
-			ngx_pfree(c->pool, key); // is this the right pool?
+			ngx_pfree(c->pool, key);
 		}
 
 		return NGX_OK;
@@ -1197,7 +1197,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(key_st)); // is this the right pool?
+		key = ngx_pcalloc(c->pool, sizeof(key_st));
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
@@ -1246,7 +1246,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 					"on default key, session ticket and cache support disabled");
 			}
 
-			ngx_pfree(c->pool, key); // is this the right pool?
+			ngx_pfree(c->pool, key);
 			break;
 		}
 	} else if (ngx_strncmp(name.via.str.ptr, SET_DEFAULT_KEY_EVENT, name.via.str.size) == 0) {
@@ -1463,7 +1463,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(key_st)); // is this the right pool?
+		key = ngx_pcalloc(c->pool, sizeof(key_st));
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
@@ -1816,7 +1816,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 				have_changed = 1;
 
 				ngx_queue_remove(q);
-				ngx_pfree(c->pool, server); // is this the right pool?
+				ngx_pfree(c->pool, server);
 			} else {
 				/* update_member */
 				insert_member = 0;
@@ -1832,7 +1832,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		have_changed = 1;
 
 		if (insert_member) {
-			server = ngx_pcalloc(c->pool, sizeof(memc_server_st)); // is this the right pool?
+			server = ngx_pcalloc(c->pool, sizeof(memc_server_st));
 		}
 
 		if (addr.via.bin.size == 16 && IN6_IS_ADDR_V4MAPPED(addr.via.bin.ptr)) {
