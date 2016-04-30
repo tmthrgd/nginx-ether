@@ -131,6 +131,8 @@ typedef struct _peer_st {
 		ngx_buf_t send;
 		ngx_buf_t recv;
 
+		int has_send;
+
 		ngx_str_t auth;
 
 		state_et state;
@@ -522,6 +524,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	pc->log = cf->log;
 	pc->log_error = NGX_ERROR_ERR;
 
+	peer->serf.has_send = 1;
+
 	peer->serf.state = HANDSHAKING;
 
 	do {
@@ -737,8 +741,6 @@ static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
 	return NULL;
 }
 
-static void dummy_write_handler(ngx_event_t *wev) { }
-
 static void serf_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
@@ -884,6 +886,10 @@ static void serf_write_handler(ngx_event_t *wev)
 	c = wev->data;
 	peer = c->data;
 
+	if (!peer->serf.has_send) {
+		return;
+	}
+
 	sbuf = &peer->serf.sbuf;
 	pk = &peer->serf.pk;
 
@@ -944,7 +950,7 @@ static void serf_write_handler(ngx_event_t *wev)
 
 		msgpack_sbuffer_destroy(sbuf);
 
-		c->write->handler = dummy_write_handler;
+		peer->serf.has_send = 0;
 	}
 }
 
@@ -1080,7 +1086,7 @@ static ngx_int_t handle_handshake_resp(ngx_connection_t *c, peer_st *peer, ssize
 		peer->serf.state = STREAM_KEY_EVSUB;
 	}
 
-	c->write->handler = serf_write_handler;
+	peer->serf.has_send = 1;
 	return NGX_OK;
 }
 
@@ -1093,7 +1099,7 @@ static ngx_int_t handle_auth_resp(ngx_connection_t *c, peer_st *peer, ssize_t si
 
 	peer->serf.state = STREAM_KEY_EVSUB;
 
-	c->write->handler = serf_write_handler;
+	peer->serf.has_send = 1;
 	return NGX_OK;
 }
 
@@ -1121,7 +1127,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	if (peer->serf.state == STREAM_KEY_EVSUB) {
 		peer->serf.state = RETRIEVE_KEYS;
 
-		c->write->handler = serf_write_handler;
+		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
@@ -1375,7 +1381,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	if (peer->serf.state == RETRIEVE_KEYS) {
 		peer->serf.state = STREAM_MEMBER_EVSUB;
 
-		c->write->handler = serf_write_handler;
+		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
@@ -1587,7 +1593,7 @@ static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize
 	if (peer->serf.state == STREAM_MEMBER_EVSUB) {
 		peer->serf.state = LISTING_MEMBERS;
 
-		c->write->handler = serf_write_handler;
+		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
