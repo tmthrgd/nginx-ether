@@ -2634,19 +2634,12 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 
 	log_level = NGX_LOG_ERR;
 
-	switch (res_hdr->response.opcode) {
-		case PROTOCOL_BINARY_CMD_GET:
-			if (status == PROTOCOL_BINARY_RESPONSE_KEY_ENOENT) {
-				log_level = NGX_LOG_DEBUG;
-			}
-
-			break;
-		default:
-			break;
+	if (res_hdr->response.opcode == PROTOCOL_BINARY_CMD_GET
+		&& status == PROTOCOL_BINARY_RESPONSE_KEY_ENOENT) {
+		log_level = NGX_LOG_DEBUG;
 	}
 
 	ngx_log_error(log_level, op->log, 0, "memcached error %hd: %*s", status, data.len, data.data);
-
 	return NGX_ERROR;
 }
 
