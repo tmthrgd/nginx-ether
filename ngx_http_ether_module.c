@@ -685,7 +685,7 @@ static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
 	const msgpack_object_str *str;
 	size_t i;
 	int found;
-	const char *name = NULL;
+	const char *name;
 
 	if (obj->type != MSGPACK_OBJECT_MAP) {
 		return "malformed RPC response, expected a map";
