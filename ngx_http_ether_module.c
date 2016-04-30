@@ -1692,7 +1692,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	ngx_queue_t *q;
 	const char *err;
 	int skip_member, have_changed, add_member, remove_member, update_member, insert_member;
-	memc_server_st *server = NULL;
+	memc_server_st *server;
 	void *s_addr;
 	uint32_t hash, base_hash;
 	union {
