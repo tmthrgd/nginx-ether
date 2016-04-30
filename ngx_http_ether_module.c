@@ -2384,7 +2384,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		const ngx_str_t *key, const ngx_str_t *value, const void *in_data)
 {
 	memc_op_st *op = NULL;
-	unsigned char *data = NULL;
+	unsigned char *data = NULL, *p;
 	size_t len, hdr_len, ext_len = 0, body_len;
 	union {
 		uint16_t u16;
@@ -2461,7 +2461,8 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		goto error;
 	}
 
-	ngx_memzero(data, hdr_len);
+	p = data;
+	ngx_memzero(p, hdr_len);
 
 	// data[0..1] = request id
 	// data[2..3] = sequence number
@@ -2472,12 +2473,15 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		goto error;
 	}
 
-	ngx_memcpy(data, id.byte, sizeof(id.byte));
+	ngx_memcpy(p, id.byte, sizeof(id.byte));
 
-	data[4] = 0;
-	data[5] = 1;
+	p[4] = 0;
+	p[5] = 1;
 
-	req_hdr = (protocol_binary_request_header *)&data[8];
+	p += 8;
+
+	req_hdr = (protocol_binary_request_header *)p;
+	p += hdr_len - 8;
 
 	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
 	req_hdr->request.opcode = cmd;
@@ -2499,10 +2503,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		}
 	}
 
-	ngx_memcpy(&data[hdr_len], key->data, key->len);
+	p = ngx_cpymem(p, key->data, key->len);
 
 	if (value) {
-		ngx_memcpy(&data[hdr_len + key->len], value->data, value->len);
+		p = ngx_cpymem(p, value->data, value->len);
 	}
 
 	op = ngx_pcalloc(peer->pool, sizeof(memc_op_st));
