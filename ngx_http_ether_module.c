@@ -2749,7 +2749,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ngx_str_t key, value;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
-	ngx_ssl_session_t *sess = NULL;
+	ngx_ssl_session_t *sess;
 	EVP_AEAD_CTX aead_ctx;
 	CBS cbs, name, nonce;
 	size_t plaintext_len;
@@ -2759,8 +2759,6 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
-
-	EVP_AEAD_CTX_zero(&aead_ctx);
 
 	op = SSL_get_ex_data(ssl_conn, g_ssl_exdata_memc_op_index);
 	if (!op) {
@@ -2785,17 +2783,18 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		op->ev = c->write;
 		op->log = c->log;
 
-		if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_memc_op_index, op)) {
-			goto cleanup;
-		}
-
 		cln = ngx_pool_cleanup_add(c->pool, 0);
 		if (!cln) {
-			goto cleanup;
+			memc_cleanup_operation(op);
+			return NULL;
 		}
 
 		cln->handler = (ngx_pool_cleanup_pt)memc_cleanup_operation;
 		cln->data = op;
+
+		if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_memc_op_index, op)) {
+			return NULL;
+		}
 
 		return SSL_magic_pending_session_ptr();
 	}
@@ -2807,11 +2806,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	if (rc == NGX_ERROR) {
-		goto cleanup;
+		return NULL;
 	}
 
 	/* rc == NGX_OK */
 	CBS_init(&cbs, value.data, value.len);
+	EVP_AEAD_CTX_zero(&aead_ctx);
 
 	if (!CBS_get_bytes(&cbs, &name, SSL_TICKET_KEY_NAME_LEN)
 		|| session_ticket_key_dec(ssl_conn, CBS_data(&name), &aead_ctx) <= 0
@@ -2820,23 +2820,20 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 				(uint8_t *)CBS_data(&cbs), &plaintext_len, CBS_len(&cbs),
 				CBS_data(&nonce), CBS_len(&nonce), CBS_data(&cbs), CBS_len(&cbs),
 				id, len)) {
-		goto cleanup;
+		EVP_AEAD_CTX_cleanup(&aead_ctx);
+		return NULL;
 	}
 
 	*copy = 0;
 	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len);
-	if (!sess) {
+	if (sess) {
+		ngx_memcpy(sess->session_id, id, len);
+		sess->session_id_length = len;
+	} else {
 		ERR_clear_error(); /* Don't leave an error on the queue. */
-		goto cleanup;
 	}
 
-	ngx_memcpy(sess->session_id, id, len);
-	sess->session_id_length = len;
-
-cleanup:
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
-
-	memc_cleanup_operation(op);
 	return sess;
 }
 
