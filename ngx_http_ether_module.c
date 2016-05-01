@@ -13,10 +13,12 @@
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
 #define WIPE_KEYS_EVENT "wipe-keys"
+#define LIST_KEYS_QUERY "list-keys"
 
 #define STREAM_KEY_EVENTS \
 	("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT \
-	",user:" SET_DEFAULT_KEY_EVENT ",user:" WIPE_KEYS_EVENT)
+	",user:" SET_DEFAULT_KEY_EVENT ",user:" WIPE_KEYS_EVENT \
+	",query:" LIST_KEYS_QUERY)
 
 #define RETRIEVE_KEYS_QUERY "retrieve-keys"
 
@@ -59,7 +61,8 @@ typedef enum {
 	STREAM_KEY_EVSUB,
 	RETRIEVE_KEYS,
 	STREAM_MEMBER_EVSUB,
-	LISTING_MEMBERS
+	LISTING_MEMBERS,
+	RESPOND_LIST_KEYS_QUERY
 } state_et;
 
 typedef struct {
@@ -136,6 +139,8 @@ typedef struct _peer_st {
 		state_et state;
 
 		uint64_t seq;
+
+		uint64_t listing_keys_id;
 	} serf;
 
 	struct {
@@ -195,6 +200,7 @@ static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer);
 static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer);
 static void add_member_ev_req_body(msgpack_packer *pk, peer_st *peer);
 static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer);
+static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer);
 
 static ngx_int_t handle_handshake_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
 static ngx_int_t handle_auth_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
@@ -261,6 +267,10 @@ static const struct serf_cmd_st kSerfCMDs[] = {
 	  ngx_string("members-filtered"),
 	  add_list_members_req_body,
 	  handle_list_members_resp },
+	{ RESPOND_LIST_KEYS_QUERY,
+	  ngx_string("respond"),
+	  add_respond_list_keys_body,
+	  NULL },
 };
 static const size_t kNumSerfCMDs = sizeof(kSerfCMDs) / sizeof(kSerfCMDs[0]);
 
@@ -875,6 +885,10 @@ static void serf_read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
+	if (!cmd->handle_serf_resp) {
+		goto done;
+	}
+
 	switch (cmd->handle_serf_resp(c, peer, size)) {
 		case NGX_AGAIN:
 			peer->serf.recv.pos = hdr_start;
@@ -1080,6 +1094,68 @@ static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_str_body(pk, "alive", sizeof("alive") - 1);
 }
 
+static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer)
+{
+	msgpack_sbuffer sbuf;
+	msgpack_packer pk2;
+	key_st *key;
+	ngx_queue_t *q;
+	size_t num = 0;
+
+	msgpack_sbuffer_init(&sbuf);
+	msgpack_packer_init(&pk2, &sbuf, msgpack_sbuffer_write);
+
+	msgpack_pack_map(&pk2, 2);
+
+	msgpack_pack_str(&pk2, sizeof("Default") - 1);
+	msgpack_pack_str_body(&pk2, "Default", sizeof("Default") - 1);
+
+	if (peer->default_ticket_key) {
+		msgpack_pack_bin(&pk2, SSL_TICKET_KEY_NAME_LEN);
+		msgpack_pack_bin_body(&pk2, peer->default_ticket_key->name, SSL_TICKET_KEY_NAME_LEN);
+	} else {
+		msgpack_pack_bin(&pk2, 0);
+	}
+
+	msgpack_pack_str(&pk2, sizeof("Keys") - 1);
+	msgpack_pack_str_body(&pk2, "Keys", sizeof("Keys") - 1);
+
+	for (q = ngx_queue_head(&peer->ticket_keys);
+		q != ngx_queue_sentinel(&peer->ticket_keys);
+		q = ngx_queue_next(q)) {
+		num++;
+	}
+
+	msgpack_pack_array(&pk2, num);
+
+	for (q = ngx_queue_head(&peer->ticket_keys);
+		q != ngx_queue_sentinel(&peer->ticket_keys);
+		q = ngx_queue_next(q)) {
+		key = ngx_queue_data(q, key_st, queue);
+
+		msgpack_pack_bin(&pk2, SSL_TICKET_KEY_NAME_LEN);
+		msgpack_pack_bin_body(&pk2, key->name, SSL_TICKET_KEY_NAME_LEN);
+	}
+
+	// {"ID": 1023, "Payload": "my response"}
+
+	msgpack_pack_map(pk, 2);
+
+	msgpack_pack_str(pk, sizeof("ID") - 1);
+	msgpack_pack_str_body(pk, "ID", sizeof("ID") - 1);
+	msgpack_pack_uint64(pk, peer->serf.listing_keys_id);
+
+	msgpack_pack_str(pk, sizeof("Payload") - 1);
+	msgpack_pack_str_body(pk, "Payload", sizeof("Payload") - 1);
+	msgpack_pack_bin(pk, sbuf.size);
+	msgpack_pack_bin_body(pk, sbuf.data, sbuf.size);
+
+	msgpack_sbuffer_destroy(&sbuf);
+
+	peer->serf.state = WAITING;
+	peer->serf.listing_keys_id = 0;
+}
+
 static ngx_int_t handle_handshake_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
 {
 	if (peer->serf.state != HANDSHAKING) {
@@ -1114,7 +1190,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 {
 	ngx_int_t rc;
 	msgpack_unpacked und;
-	msgpack_object event, name, payload = {0};
+	msgpack_object event, name, payload = {0}, id;
 	key_st *key;
 	ngx_queue_t *q, *prev_q;
 	const char *err;
@@ -1155,11 +1231,35 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 
 	err = ether_msgpack_parse_map(&und.data,
 		"Event", &event, "Name", &name, "Payload", &payload,
-		"LTime", NULL, "Coalesce", NULL,
+		"LTime", NULL, /* "Coalesce", NULL, */
 		NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		goto error;
+	}
+
+	if (ngx_strncmp(event.via.str.ptr, "query", event.via.str.size) == 0) {
+		id.type = MSGPACK_OBJECT_POSITIVE_INTEGER;
+
+		err = ether_msgpack_parse_map(&und.data, "ID", &id, NULL);
+		if (err) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
+			goto error;
+		}
+
+		if (ngx_strncmp(name.via.str.ptr, LIST_KEYS_QUERY, name.via.str.size) == 0) {
+			assert(peer->serf.state == WAITING);
+
+			peer->serf.state = RESPOND_LIST_KEYS_QUERY;
+			peer->serf.listing_keys_id = id.via.u64;
+			peer->serf.has_send = 1;
+			return NGX_OK;
+		} else {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"received unrecognised query from serf: %*s",
+				name.via.str.size, name.via.str.ptr);
+			goto error;
+		}
 	}
 
 	if (ngx_strncmp(event.via.str.ptr, "user", event.via.str.size) != 0) {
@@ -1357,7 +1457,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	return NGX_OK;
 
 error:
-	if (payload.via.bin.size) {
+	if (payload.type == MSGPACK_OBJECT_BIN && payload.via.bin.size) {
 		ngx_memzero((char *)payload.via.bin.ptr, payload.via.bin.size);
 	}
 
