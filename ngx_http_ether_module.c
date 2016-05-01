@@ -136,8 +136,6 @@ typedef struct _peer_st {
 		state_et state;
 
 		uint64_t seq;
-
-		msgpack_sbuffer sbuf;
 	} serf;
 
 	struct {
@@ -211,6 +209,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
 		ngx_log_t *log);
 static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...);
+static int ether_msgpack_write(void *data, const char *buf, size_t len);
 
 static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
 static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *point, uint32_t hash);
@@ -388,8 +387,6 @@ static void cleanup_peer(void *data)
 
 		ngx_close_connection(server->c);
 	}
-
-	msgpack_sbuffer_destroy(&peer->serf.sbuf);
 }
 
 static void *create_srv_conf(ngx_conf_t *cf)
@@ -477,8 +474,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	ngx_queue_init(&peer->memc.servers);
 
-	msgpack_sbuffer_init(&peer->serf.sbuf);
-
 	peer->pool = cf->pool;
 	peer->log = cf->log;
 
@@ -510,6 +505,19 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	} while (!seq.u64);
 
 	peer->serf.seq = seq.u64;
+
+	/* 1/4 of the page_size, is it enough? */
+	peer->serf.send.start = ngx_palloc(cf->pool, ngx_pagesize / 4);
+	if (!peer->serf.send.start) {
+		ngx_log_error(NGX_LOG_ERR, cf->log, 0, "ngx_palloc failed to allocated send buffer");
+		return NGX_CONF_ERROR;
+	}
+
+	peer->serf.send.pos = peer->serf.send.start;
+	peer->serf.send.last = peer->serf.send.start;
+	peer->serf.send.end = peer->serf.send.start + ngx_pagesize / 4;
+
+	peer->serf.send.tag = cf->pool;
 
 	if (RAND_bytes(nonce_key, sizeof(nonce_key)) != 1) {
 		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "RAND_bytes failed");
@@ -715,6 +723,45 @@ static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
 	return NULL;
 }
 
+static int ether_msgpack_write(void *data, const char *buf, size_t len)
+{
+	ngx_buf_t *nbuf = data;
+	ngx_pool_t *pool = nbuf->tag;
+	u_char *new_buf;
+	size_t size, nsize, tmp_nsize;
+
+	if ((size_t)(nbuf->end - nbuf->last) < len) {
+		size = nbuf->last - nbuf->start;
+		nsize = (nbuf->end - nbuf->start) * 2;
+
+		while (nsize < size + len) {
+			tmp_nsize = nsize * 2;
+			if (tmp_nsize <= nsize) {
+				nsize = size + len;
+				break;
+			}
+
+			nsize = tmp_nsize;
+		}
+
+		new_buf = ngx_palloc(pool, nsize);
+		if (!new_buf) {
+			return -1;
+		}
+
+		ngx_memcpy(new_buf, nbuf->start, size);
+		ngx_pfree(pool, nbuf->start);
+
+		nbuf->start = new_buf;
+		nbuf->pos = new_buf;
+		nbuf->last = new_buf + size;
+		nbuf->end = new_buf + nsize;
+	}
+
+	nbuf->last = ngx_cpymem(nbuf->last, buf, len);
+	return 0;
+}
+
 static void serf_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
@@ -852,7 +899,6 @@ static void serf_write_handler(ngx_event_t *wev)
 	ngx_connection_t *c;
 	peer_st *peer;
 	ssize_t size;
-	msgpack_sbuffer *sbuf;
 	msgpack_packer pk;
 	struct serf_cmd_st b;
 	const struct serf_cmd_st *cmd;
@@ -864,9 +910,7 @@ static void serf_write_handler(ngx_event_t *wev)
 		return;
 	}
 
-	sbuf = &peer->serf.sbuf;
-
-	if (!peer->serf.send.start) {
+	if (peer->serf.send.last == peer->serf.send.start) {
 		b.state = peer->serf.state;
 		cmd = bsearch(&b, kSerfCMDs, kNumSerfCMDs, sizeof(struct serf_cmd_st),
 			serf_cmd_state_cmp);
@@ -876,8 +920,7 @@ static void serf_write_handler(ngx_event_t *wev)
 			return;
 		}
 
-		msgpack_sbuffer_clear(sbuf);
-		msgpack_packer_init(&pk, sbuf, msgpack_sbuffer_write);
+		msgpack_packer_init(&pk, &peer->serf.send, ether_msgpack_write);
 
 		// header
 		// {"Command": "handshake", "Seq": 0}
@@ -894,11 +937,6 @@ static void serf_write_handler(ngx_event_t *wev)
 
 		// body
 		cmd->add_serf_req_body(&pk, peer);
-
-		peer->serf.send.start = (u_char *)sbuf->data;
-		peer->serf.send.pos = (u_char *)sbuf->data;
-		peer->serf.send.last = (u_char *)sbuf->data + sbuf->size;
-		peer->serf.send.end = (u_char *)sbuf->data + sbuf->alloc;
 	}
 
 	while (peer->serf.send.pos < peer->serf.send.last) {
@@ -916,10 +954,8 @@ static void serf_write_handler(ngx_event_t *wev)
 	if (peer->serf.send.pos == peer->serf.send.last) {
 		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ether send done");
 
-		peer->serf.send.start = NULL;
-		peer->serf.send.pos = NULL;
-		peer->serf.send.last = NULL;
-		peer->serf.send.end = NULL;
+		peer->serf.send.pos = peer->serf.send.start;
+		peer->serf.send.last = peer->serf.send.start;
 
 		peer->serf.has_send = 0;
 	}
