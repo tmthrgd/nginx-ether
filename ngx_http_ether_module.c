@@ -138,7 +138,6 @@ typedef struct _peer_st {
 		uint64_t seq;
 
 		msgpack_sbuffer sbuf;
-		msgpack_packer pk;
 	} serf;
 
 	struct {
@@ -389,6 +388,8 @@ static void cleanup_peer(void *data)
 
 		ngx_close_connection(server->c);
 	}
+
+	msgpack_sbuffer_destroy(&peer->serf.sbuf);
 }
 
 static void *create_srv_conf(ngx_conf_t *cf)
@@ -475,6 +476,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	cln->data = peer;
 
 	ngx_queue_init(&peer->memc.servers);
+
+	msgpack_sbuffer_init(&peer->serf.sbuf);
 
 	peer->pool = cf->pool;
 	peer->log = cf->log;
@@ -850,7 +853,7 @@ static void serf_write_handler(ngx_event_t *wev)
 	peer_st *peer;
 	ssize_t size;
 	msgpack_sbuffer *sbuf;
-	msgpack_packer *pk;
+	msgpack_packer pk;
 	struct serf_cmd_st b;
 	const struct serf_cmd_st *cmd;
 
@@ -862,7 +865,6 @@ static void serf_write_handler(ngx_event_t *wev)
 	}
 
 	sbuf = &peer->serf.sbuf;
-	pk = &peer->serf.pk;
 
 	if (!peer->serf.send.start) {
 		b.state = peer->serf.state;
@@ -874,24 +876,24 @@ static void serf_write_handler(ngx_event_t *wev)
 			return;
 		}
 
-		msgpack_sbuffer_init(sbuf);
-		msgpack_packer_init(pk, sbuf, msgpack_sbuffer_write);
+		msgpack_sbuffer_clear(sbuf);
+		msgpack_packer_init(&pk, sbuf, msgpack_sbuffer_write);
 
 		// header
 		// {"Command": "handshake", "Seq": 0}
-		msgpack_pack_map(pk, 2);
+		msgpack_pack_map(&pk, 2);
 
-		msgpack_pack_str(pk, sizeof("Command") - 1);
-		msgpack_pack_str_body(pk, "Command", sizeof("Command") - 1);
-		msgpack_pack_str(pk, cmd->name.len);
-		msgpack_pack_str_body(pk, cmd->name.data, cmd->name.len);
+		msgpack_pack_str(&pk, sizeof("Command") - 1);
+		msgpack_pack_str_body(&pk, "Command", sizeof("Command") - 1);
+		msgpack_pack_str(&pk, cmd->name.len);
+		msgpack_pack_str_body(&pk, cmd->name.data, cmd->name.len);
 
-		msgpack_pack_str(pk, sizeof("Seq") - 1);
-		msgpack_pack_str_body(pk, "Seq", sizeof("Seq") - 1);
-		msgpack_pack_uint64(pk, peer->serf.seq | peer->serf.state);
+		msgpack_pack_str(&pk, sizeof("Seq") - 1);
+		msgpack_pack_str_body(&pk, "Seq", sizeof("Seq") - 1);
+		msgpack_pack_uint64(&pk, peer->serf.seq | peer->serf.state);
 
 		// body
-		cmd->add_serf_req_body(pk, peer);
+		cmd->add_serf_req_body(&pk, peer);
 
 		peer->serf.send.start = (u_char *)sbuf->data;
 		peer->serf.send.pos = (u_char *)sbuf->data;
@@ -918,8 +920,6 @@ static void serf_write_handler(ngx_event_t *wev)
 		peer->serf.send.pos = NULL;
 		peer->serf.send.last = NULL;
 		peer->serf.send.end = NULL;
-
-		msgpack_sbuffer_destroy(sbuf);
 
 		peer->serf.has_send = 0;
 	}
