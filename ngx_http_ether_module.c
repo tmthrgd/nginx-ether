@@ -999,7 +999,7 @@ static void add_auth_req_body(msgpack_packer *pk, peer_st *peer)
 
 static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer)
 {
-	// {"Type": "member-join,user:deploy"}`
+	// {"Type": "member-join,user:deploy"}
 
 	msgpack_pack_map(pk, 1);
 
