@@ -52,13 +52,6 @@
 
 typedef struct _peer_st peer_st;
 
-typedef struct {
-	ngx_str_t serf_address;
-	ngx_str_t serf_auth;
-
-	peer_st *peer;
-} srv_conf_t;
-
 typedef enum {
 	WAITING = 0,
 	HANDSHAKING,
@@ -132,8 +125,12 @@ typedef struct _peer_st {
 		ngx_buf_t send;
 		ngx_buf_t recv;
 
-		int has_send;
+		int has_send:1;
 
+		int pc_connect:1;
+
+		/* conf directives */
+		ngx_str_t address;
 		ngx_str_t auth;
 
 		state_et state;
@@ -274,14 +271,14 @@ static ngx_command_t module_commands[] = {
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(srv_conf_t, serf_address),
+	  offsetof(peer_st, serf.address),
 	  NULL },
 
 	{ ngx_string("ether_auth"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE12,
 	  set_opt_env_str,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(srv_conf_t, serf_auth),
+	  offsetof(peer_st, serf.auth),
 	  NULL },
 
 	ngx_null_command
@@ -320,7 +317,7 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 {
 	ngx_http_core_main_conf_t *cmcf;
 	ngx_http_core_srv_conf_t **cscfp;
-	srv_conf_t *conf;
+	peer_st *peer;
 	ngx_connection_t *c;
 	ngx_peer_connection_t *pc;
 	ngx_int_t rc;
@@ -331,12 +328,12 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 
 	cscfp = cmcf->servers.elts;
 	for (i = 0; i < cmcf->servers.nelts; i++) {
-		conf = ngx_http_conf_get_module_srv_conf(cscfp[i], ngx_http_ether_module);
-		if (!conf || !conf->peer) {
+		peer = ngx_http_conf_get_module_srv_conf(cscfp[i], ngx_http_ether_module);
+		if (!peer || !peer->serf.pc_connect) {
 			continue;
 		}
 
-		pc = &conf->peer->serf.pc;
+		pc = &peer->serf.pc;
 
 		rc = ngx_event_connect_peer(pc);
 		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
@@ -345,7 +342,7 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		}
 
 		c = pc->connection;
-		c->data = conf->peer;
+		c->data = peer;
 
 		rev = c->read;
 		wev = c->write;
@@ -357,6 +354,8 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 
 		rev->handler = serf_read_handler;
 		wev->handler = serf_write_handler;
+
+		peer->serf.pc_connect = 0;
 
 		/* The kqueue's loop interface needs it. */
 		if (rc == NGX_OK) {
@@ -394,9 +393,9 @@ static void cleanup_peer(void *data)
 
 static void *create_srv_conf(ngx_conf_t *cf)
 {
-	srv_conf_t *escf;
+	peer_st *escf;
 
-	escf = ngx_pcalloc(cf->pool, sizeof(srv_conf_t));
+	escf = ngx_pcalloc(cf->pool, sizeof(peer_st));
 	if (!escf) {
 		return NULL;
 	}
@@ -404,8 +403,8 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	/*
 	 * set by ngx_pcalloc():
 	 *
-	 *     escf->serf_address = { 0, NULL };
-	 *     escf->serf_auth = { 0, NULL };
+	 *     escf->serf.address = { 0, NULL };
+	 *     escf->serf.auth = { 0, NULL };
 	 */
 
 	return escf;
@@ -413,11 +412,10 @@ static void *create_srv_conf(ngx_conf_t *cf)
 
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	const srv_conf_t *prev = parent;
-	srv_conf_t *conf = child;
+	const peer_st *prev = parent;
+	peer_st *peer = child;
 	ngx_http_ssl_srv_conf_t *ssl;
 	ngx_url_t u;
-	peer_st *peer;
 	ngx_pool_cleanup_t *cln;
 	ngx_peer_connection_t *pc;
 	union {
@@ -428,10 +426,10 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	ssl = ngx_http_conf_get_module_srv_conf(cf, ngx_http_ssl_module);
 
-	ngx_conf_merge_str_value(conf->serf_address, prev->serf_address, "");
-	ngx_conf_merge_str_value(conf->serf_auth, prev->serf_auth, "");
+	ngx_conf_merge_str_value(peer->serf.address, prev->serf.address, "");
+	ngx_conf_merge_str_value(peer->serf.auth, prev->serf.auth, "");
 
-	if (!conf->serf_address.len || ngx_strcmp(conf->serf_address.data, "off") == 0) {
+	if (!peer->serf.address.len || ngx_strcmp(peer->serf.address.data, "off") == 0) {
 		return NGX_CONF_OK;
 	}
 
@@ -453,14 +451,13 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		return NGX_CONF_ERROR;
 	}
 
-	if (ngx_strcmp(conf->serf_address.data, "on") == 0) {
-		ngx_str_set(&conf->serf_address, "127.0.0.1:7373");
+	if (ngx_strcmp(peer->serf.address.data, "on") == 0) {
+		ngx_str_set(&peer->serf.address, "127.0.0.1:7373");
 	}
 
 	ngx_memzero(&u, sizeof(ngx_url_t));
 
-	u.url.len = conf->serf_address.len;
-	u.url.data = conf->serf_address.data;
+	u.url = peer->serf.address;
 	u.default_port = 7373;
 	u.no_resolve = 1;
 
@@ -469,12 +466,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		return NGX_CONF_ERROR;
 	}
 
-	peer = ngx_pcalloc(cf->cycle->pool, sizeof(peer_st));
-	if (!peer) {
-		return NGX_CONF_ERROR;
-	}
-
-	cln = ngx_pool_cleanup_add(cf->cycle->pool, 0);
+	cln = ngx_pool_cleanup_add(cf->pool, 0);
 	if (!cln) {
 		return NGX_CONF_ERROR;
 	}
@@ -482,15 +474,10 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	cln->handler = cleanup_peer;
 	cln->data = peer;
 
-	conf->peer = peer;
-
-	peer->serf.auth.data = conf->serf_auth.data;
-	peer->serf.auth.len = conf->serf_auth.len;
-
 	ngx_queue_init(&peer->memc.servers);
 
-	peer->pool = cf->cycle->pool;
-	peer->log = cf->cycle->log;
+	peer->pool = cf->pool;
+	peer->log = cf->log;
 
 	peer->ssl = ssl;
 
@@ -500,7 +487,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	pc->sockaddr = u.addrs[0].sockaddr;
 	pc->socklen = u.addrs[0].socklen;
-	pc->name = &conf->serf_address;
+	pc->name = &peer->serf.address;
 
 	pc->get = ngx_event_get_peer;
 	pc->log = cf->log;
@@ -574,6 +561,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			"session_timeout of %d seconds will be capped",
 			REALTIME_MAXDELTA, ssl->session_timeout);
 	}
+
+	peer->serf.pc_connect = 1;
 
 	return NGX_CONF_OK;
 }
