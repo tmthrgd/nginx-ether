@@ -381,6 +381,7 @@ static void cleanup_peer(void *data)
 	ngx_connection_t *c;
 	ngx_queue_t *q;
 	memc_server_st *server;
+	key_st *key;
 
 	pc = &peer->serf.pc;
 
@@ -396,6 +397,14 @@ static void cleanup_peer(void *data)
 		server = ngx_queue_data(q, memc_server_st, queue);
 
 		ngx_close_connection(server->c);
+	}
+
+	for (q = ngx_queue_head(&peer->ticket_keys);
+		q != ngx_queue_sentinel(&peer->ticket_keys);
+		q = ngx_queue_next(q)) {
+		key = ngx_queue_data(q, key_st, queue);
+
+		ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
 	}
 }
 
