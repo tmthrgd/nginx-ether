@@ -1558,7 +1558,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 		goto error;
 	}
 
-	if (default_key.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
+	if (default_key.via.bin.size && default_key.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid default key size");
 		goto error;
 	}
@@ -1623,7 +1623,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
 
 	is_default_key:
-		if (ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr,
+		if (default_key.via.bin.size && ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr,
 				SSL_TICKET_KEY_NAME_LEN) == 0) {
 			peer->default_ticket_key = key;
 
