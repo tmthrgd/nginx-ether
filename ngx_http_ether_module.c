@@ -1257,12 +1257,17 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		}
 
 		if (ngx_strncmp(name.via.str.ptr, LIST_KEYS_QUERY, name.via.str.size) == 0) {
-			assert(peer->serf.state == WAITING);
+			if (peer->serf.state == WAITING) {
+				peer->serf.state = RESPOND_LIST_KEYS_QUERY;
+				peer->serf.listing_keys_id = id.via.u64;
+				peer->serf.has_send = 1;
+				return NGX_OK;
+			}
 
-			peer->serf.state = RESPOND_LIST_KEYS_QUERY;
-			peer->serf.listing_keys_id = id.via.u64;
-			peer->serf.has_send = 1;
-			return NGX_OK;
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"received " LIST_KEYS_QUERY " query outside of WAITING state, " \
+				"in state: %xd", peer->serf.state);
+			goto error;
 		} else {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
 				"received unrecognised query from serf: %*s",
