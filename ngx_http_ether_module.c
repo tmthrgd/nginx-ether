@@ -736,7 +736,7 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 	ngx_buf_t *nbuf = data;
 	ngx_pool_t *pool = nbuf->tag;
 	u_char *new_buf;
-	size_t size, nsize, tmp_nsize;
+	size_t size, nsize;
 
 	if (!nbuf->start || (size_t)(nbuf->end - nbuf->last) < len) {
 		if (nbuf->start) {
@@ -748,14 +748,7 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 		}
 
 		while (nsize < size + len) {
-			tmp_nsize = nsize * 2;
-			if (tmp_nsize <= nsize) {
-				/* overflow */
-				nsize = size + len;
-				break;
-			}
-
-			nsize = tmp_nsize;
+			nsize *= 2;
 		}
 
 		new_buf = ngx_palloc(pool, nsize);
