@@ -525,17 +525,6 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	peer->serf.seq = seq.u64;
 
-	/* 1/4 of the page_size, is it enough? */
-	peer->serf.send.start = ngx_palloc(cf->pool, ngx_pagesize / 4);
-	if (!peer->serf.send.start) {
-		ngx_log_error(NGX_LOG_ERR, cf->log, 0, "ngx_palloc failed to allocated send buffer");
-		return NGX_CONF_ERROR;
-	}
-
-	peer->serf.send.pos = peer->serf.send.start;
-	peer->serf.send.last = peer->serf.send.start;
-	peer->serf.send.end = peer->serf.send.start + ngx_pagesize / 4;
-
 	peer->serf.send.tag = cf->pool;
 
 	if (RAND_bytes(nonce_key, sizeof(nonce_key)) != 1) {
@@ -749,7 +738,28 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 	u_char *new_buf;
 	size_t size, nsize, tmp_nsize;
 
-	if ((size_t)(nbuf->end - nbuf->last) < len) {
+	if (!nbuf->start) {
+		nsize = ngx_pagesize / 4;
+
+		while (nsize < len) {
+			tmp_nsize = nsize * 2;
+			if (tmp_nsize <= nsize) {
+				nsize = len;
+				break;
+			}
+
+			nsize = tmp_nsize;
+		}
+
+		nbuf->start = ngx_palloc(pool, nsize);
+		if (!nbuf->start) {
+			return -1;
+		}
+
+		nbuf->pos = nbuf->start;
+		nbuf->last = nbuf->start;
+		nbuf->end = nbuf->start + nsize;
+	} else if ((size_t)(nbuf->end - nbuf->last) < len) {
 		size = nbuf->last - nbuf->start;
 		nsize = (nbuf->end - nbuf->start) * 2;
 
