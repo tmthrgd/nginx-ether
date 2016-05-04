@@ -738,34 +738,19 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 	u_char *new_buf;
 	size_t size, nsize, tmp_nsize;
 
-	if (!nbuf->start) {
-		nsize = ngx_pagesize / 4;
-
-		while (nsize < len) {
-			tmp_nsize = nsize * 2;
-			if (tmp_nsize <= nsize) {
-				nsize = len;
-				break;
-			}
-
-			nsize = tmp_nsize;
+	if (!nbuf->start || (size_t)(nbuf->end - nbuf->last) < len) {
+		if (nbuf->start) {
+			size = nbuf->last - nbuf->start;
+			nsize = (nbuf->end - nbuf->start) * 2;
+		} else {
+			size = 0;
+			nsize = ngx_pagesize / 4;
 		}
-
-		nbuf->start = ngx_palloc(pool, nsize);
-		if (!nbuf->start) {
-			return -1;
-		}
-
-		nbuf->pos = nbuf->start;
-		nbuf->last = nbuf->start;
-		nbuf->end = nbuf->start + nsize;
-	} else if ((size_t)(nbuf->end - nbuf->last) < len) {
-		size = nbuf->last - nbuf->start;
-		nsize = (nbuf->end - nbuf->start) * 2;
 
 		while (nsize < size + len) {
 			tmp_nsize = nsize * 2;
 			if (tmp_nsize <= nsize) {
+				/* overflow */
 				nsize = size + len;
 				break;
 			}
@@ -778,8 +763,10 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 			return -1;
 		}
 
-		ngx_memcpy(new_buf, nbuf->start, size);
-		ngx_pfree(pool, nbuf->start);
+		if (nbuf->start) {
+			ngx_memcpy(new_buf, nbuf->start, size);
+			ngx_pfree(pool, nbuf->start);
+		}
 
 		nbuf->start = new_buf;
 		nbuf->pos = new_buf;
