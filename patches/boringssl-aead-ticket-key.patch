@@ -1,7 +1,7 @@
 diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
---- a/include/openssl/ssl.h	2016-03-29 21:14:01.000000000 +1030
-+++ b/include/openssl/ssl.h	2016-04-03 13:34:08.839228163 +0930
-@@ -1775,7 +1775,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+--- a/include/openssl/ssl.h	2016-05-04 23:02:25.000000000 +0930
++++ b/include/openssl/ssl.h	2016-05-05 13:16:31.435515124 +0930
+@@ -1785,7 +1785,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
   * In both modes, |ctx| and |hmac_ctx| will already have been initialized with
   * |EVP_CIPHER_CTX_init| and |HMAC_CTX_init|, respectively. |callback|
   * configures |hmac_ctx| with an HMAC digest and key, and configures |ctx|
@@ -13,7 +13,7 @@ diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
   *
   * When encrypting a new ticket, |encrypt| will be one. It writes a public
   * 16-byte key name to |key_name| and a fresh IV to |iv|. The output IV length
-@@ -1796,6 +1799,17 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+@@ -1806,6 +1809,17 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
                                    EVP_CIPHER_CTX *ctx, HMAC_CTX *hmac_ctx,
                                    int encrypt));
  
@@ -32,8 +32,8 @@ diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
  /* Elliptic curve Diffie-Hellman.
   *
 diff -rupN a/ssl/s3_lib.c b/ssl/s3_lib.c
---- a/ssl/s3_lib.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/s3_lib.c	2016-04-03 12:42:09.671761047 +0930
+--- a/ssl/s3_lib.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/s3_lib.c	2016-05-05 13:16:31.435515124 +0930
 @@ -162,6 +162,11 @@
  #include "internal.h"
  
@@ -58,9 +58,9 @@ diff -rupN a/ssl/s3_lib.c b/ssl/s3_lib.c
    if (ssl->cipher_list != NULL) {
      return ssl->cipher_list;
 diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
---- a/ssl/s3_srvr.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/s3_srvr.c	2016-04-03 14:04:06.560142579 +0930
-@@ -1981,10 +1981,12 @@ int ssl3_send_server_certificate(SSL *ss
+--- a/ssl/s3_srvr.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/s3_srvr.c	2016-05-05 13:16:31.435515124 +0930
+@@ -1979,10 +1979,12 @@ int ssl3_send_server_certificate(SSL *ss
  /* send a new session ticket (not necessarily for a new session) */
  int ssl3_send_new_session_ticket(SSL *ssl) {
    int ret = -1;
@@ -73,7 +73,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
  
    EVP_CIPHER_CTX_init(&ctx);
    HMAC_CTX_init(&hctx);
-@@ -1994,12 +1996,16 @@ int ssl3_send_new_session_ticket(SSL *ss
+@@ -1992,12 +1994,16 @@ int ssl3_send_new_session_ticket(SSL *ss
      int len;
      unsigned int hlen;
      SSL_CTX *tctx = ssl->initial_ctx;
@@ -93,7 +93,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
  
      /* Serialize the SSL_SESSION to be encoded into the ticket. */
      if (!SSL_SESSION_to_bytes_for_ticket(ssl->session, &session,
-@@ -2043,8 +2049,19 @@ int ssl3_send_new_session_ticket(SSL *ss
+@@ -2041,8 +2047,19 @@ int ssl3_send_new_session_ticket(SSL *ss
      /* Initialize HMAC and cipher contexts. If callback present it does all the
       * work otherwise use generated values from parent ctx. */
      if (tctx->tlsext_ticket_key_cb) {
@@ -115,7 +115,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
          goto err;
        }
      } else {
-@@ -2069,25 +2086,43 @@ int ssl3_send_new_session_ticket(SSL *ss
+@@ -2067,25 +2084,43 @@ int ssl3_send_new_session_ticket(SSL *ss
      macstart = p;
      memcpy(p, key_name, 16);
      p += 16;
@@ -175,7 +175,7 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
      /* Now write out lengths: p points to end of data written */
      /* Total length */
      len = p - ssl_handshake_start(ssl);
-@@ -2107,6 +2142,11 @@ err:
+@@ -2105,6 +2140,11 @@ err:
    OPENSSL_free(session);
    EVP_CIPHER_CTX_cleanup(&ctx);
    HMAC_CTX_cleanup(&hctx);
@@ -188,9 +188,9 @@ diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
  }
  
 diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
---- a/ssl/t1_lib.c	2016-03-29 21:14:01.000000000 +1030
-+++ b/ssl/t1_lib.c	2016-04-03 13:34:11.115239449 +0930
-@@ -2443,6 +2443,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+--- a/ssl/t1_lib.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/t1_lib.c	2016-05-05 13:17:36.071517349 +0930
+@@ -2405,6 +2405,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
                         size_t ticket_len, const uint8_t *session_id,
                         size_t session_id_len) {
    int ret = 1; /* Most errors are non-fatal. */
@@ -198,7 +198,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
    SSL_CTX *ssl_ctx = ssl->initial_ctx;
    uint8_t *plaintext = NULL;
  
-@@ -2450,6 +2451,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2412,6 +2413,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
    HMAC_CTX_init(&hmac_ctx);
    EVP_CIPHER_CTX cipher_ctx;
    EVP_CIPHER_CTX_init(&cipher_ctx);
@@ -206,7 +206,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
  
    *out_renew_ticket = 0;
    *out_session = NULL;
-@@ -2471,6 +2473,16 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2433,6 +2435,16 @@ int tls_process_ticket(SSL *ssl, SSL_SES
      int cb_ret = ssl_ctx->tlsext_ticket_key_cb(
          ssl, (uint8_t *)ticket /* name */, (uint8_t *)iv, &cipher_ctx,
          &hmac_ctx, 0 /* decrypt */);
@@ -223,7 +223,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
      if (cb_ret < 0) {
        ret = 0;
        goto done;
-@@ -2496,6 +2508,43 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2458,6 +2470,49 @@ int tls_process_ticket(SSL *ssl, SSL_SES
        goto done;
      }
    }
@@ -248,7 +248,13 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
 +    }
 +
 +    /* Decode the session. */
++#ifndef OPENSSL_NO_FEMTOZIP
++    SSL_SESSION *session = SSL_SESSION_from_compressed_bytes(ssl_ctx,
++                                                             plaintext,
++                                                             plaintext_len);
++#else
 +    SSL_SESSION *session = SSL_SESSION_from_bytes(plaintext, plaintext_len);
++#endif
 +    if (session == NULL) {
 +      ERR_clear_error(); /* Don't leave an error on the queue. */
 +      goto done;
@@ -267,7 +273,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
    size_t iv_len = EVP_CIPHER_CTX_iv_length(&cipher_ctx);
  
    /* Check the MAC at the end of the ticket. */
-@@ -2549,6 +2598,11 @@ done:
+@@ -2511,6 +2566,11 @@ done:
    OPENSSL_free(plaintext);
    HMAC_CTX_cleanup(&hmac_ctx);
    EVP_CIPHER_CTX_cleanup(&cipher_ctx);

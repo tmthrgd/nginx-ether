@@ -8,6 +8,7 @@
 #include "protocol_binary.h"
 
 #define MEMC_KEYS_ARE_HEX 0
+#define NGX_ETHER_SESSION_LOG 0
 
 #define INSTALL_KEY_EVENT "install-key"
 #define REMOVE_KEY_EVENT "remove-key"
@@ -159,6 +160,10 @@ typedef struct _peer_st {
 
 	ngx_queue_t ticket_keys;
 	key_st *default_ticket_key;
+
+#if NGX_ETHER_SESSION_LOG
+	ngx_log_t *session_log;
+#endif /* NGX_ETHER_SESSION_LOG */
 } peer_st;
 
 typedef void (*add_serf_req_body_pt)(msgpack_packer *pk, peer_st *peer);
@@ -582,6 +587,28 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	}
 
 	peer->serf.pc_connect = 1;
+
+#if NGX_ETHER_SESSION_LOG
+	{
+	ngx_log_t *log;
+	static ngx_str_t error_log = ngx_string("session.log");
+
+	log = ngx_pcalloc(cf->cycle->pool, sizeof(ngx_log_t));
+	if (!log) {
+		return NGX_CONF_ERROR;
+	}
+
+	log->log_level = NGX_LOG_DEBUG;
+
+	log->file = ngx_conf_open_file(cf->cycle, &error_log);
+	if (!log->file) {
+		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "failed to open session.log");
+		return NGX_CONF_ERROR;
+	}
+
+	peer->session_log = log;
+	}
+#endif /* NGX_ETHER_SESSION_LOG */
 
 	return NGX_CONF_OK;
 }
@@ -2796,7 +2823,11 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
+#ifndef OPENSSL_NO_FEMTOZIP
+	if (SSL_SESSION_to_compressed_bytes_for_ticket(ssl_ctx, sess, &session, &session_len)
+#else
 	if (SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)
+#endif
 		&& CBB_init(&cbb, SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH + session_len
 				+ EVP_AEAD_MAX_OVERHEAD)
 		&& CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
@@ -2820,6 +2851,20 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 
 		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
 	}
+
+#if NGX_ETHER_SESSION_LOG
+	OPENSSL_free(session); session = NULL;
+
+	if (peer->session_log && SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)) {
+		u_char *session_hex = ngx_palloc(c->pool, session_len*2);
+		if (session_hex) {
+			ngx_log_error(NGX_LOG_INFO, peer->session_log, 0, "%*s",
+				ngx_hex_dump(session_hex, session, session_len) - session_hex,
+				session_hex);
+			ngx_pfree(c->pool, session_hex);
+		}
+	}
+#endif /* NGX_ETHER_SESSION_LOG */
 
 	OPENSSL_free(session);
 	OPENSSL_free(value.data);
@@ -2915,7 +2960,11 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	*copy = 0;
+#ifndef OPENSSL_NO_FEMTOZIP
+	sess = SSL_SESSION_from_compressed_bytes(ssl_ctx, CBS_data(&cbs), plaintext_len);
+#else
 	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len);
+#endif
 	if (sess) {
 		ngx_memcpy(sess->session_id, id, len);
 		sess->session_id_length = len;
