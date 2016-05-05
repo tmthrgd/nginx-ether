@@ -2825,9 +2825,9 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 
 #ifndef OPENSSL_NO_FEMTOZIP
 	if (SSL_SESSION_to_compressed_bytes_for_ticket(ssl_ctx, sess, &session, &session_len)
-#else
+#else /* OPENSSL_NO_FEMTOZIP */
 	if (SSL_SESSION_to_bytes_for_ticket(sess, &session, &session_len)
-#endif
+#endif /* OPENSSL_NO_FEMTOZIP */
 		&& CBB_init(&cbb, SSL_TICKET_KEY_NAME_LEN + EVP_AEAD_MAX_NONCE_LENGTH + session_len
 				+ EVP_AEAD_MAX_OVERHEAD)
 		&& CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
@@ -2962,9 +2962,9 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	*copy = 0;
 #ifndef OPENSSL_NO_FEMTOZIP
 	sess = SSL_SESSION_from_compressed_bytes(ssl_ctx, CBS_data(&cbs), plaintext_len);
-#else
+#else /* OPENSSL_NO_FEMTOZIP */
 	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len);
-#endif
+#endif /* OPENSSL_NO_FEMTOZIP */
 	if (sess) {
 		ngx_memcpy(sess->session_id, id, len);
 		sess->session_id_length = len;
