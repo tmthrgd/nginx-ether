@@ -2544,7 +2544,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	}
 
 	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
-		"memcached operation: %s \"%*s%s\"",
+		"memcached operation: %s \"%*s\"%s",
 		cmd_str,
 		ngx_hex_dump(buf, key->data, ngx_min(key->len, 32)) - buf, buf,
 		key->len > 32 ? "..." : "");
