@@ -97,6 +97,8 @@ typedef struct {
 
 	ngx_connection_t *c;
 
+	ngx_atomic_uint_t id;
+
 	ngx_queue_t recv_ops;
 	ngx_queue_t send_ops;
 
@@ -2514,6 +2516,16 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		return NULL;
 	}
 
+	/* see comment in ngx_crc32.c */
+	if (key->len > 64) {
+		hash = ngx_crc32_long(key->data, key->len);
+	} else {
+		hash = ngx_crc32_short(key->data, key->len);
+	}
+
+	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
+	server = peer->memc.points[hash % peer->memc.npoints].data;
+
 	len = 8;
 
 	switch (cmd) {
@@ -2571,10 +2583,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	// data[4..5] = total datagrams
 	// data[6..7] = reserved
 
-	if (RAND_bytes(id.byte, sizeof(id.byte)) != 1) {
-		goto error;
-	}
-
+	id.u16 = ngx_atomic_fetch_add(&server->id, 1);
 	ngx_memcpy(p, id.byte, sizeof(id.byte));
 
 	p[4] = 0;
@@ -2624,16 +2633,6 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	op->send.pos = data;
 	op->send.last = data + len;
 	op->send.end = data + len;
-
-	/* see comment in ngx_crc32.c */
-	if (key->len > 64) {
-		hash = ngx_crc32_long(key->data, key->len);
-	} else {
-		hash = ngx_crc32_short(key->data, key->len);
-	}
-
-	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
-	server = peer->memc.points[hash % peer->memc.npoints].data;
 
 	op->log = server->c->log;
 
