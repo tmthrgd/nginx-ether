@@ -2988,16 +2988,14 @@ static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u
 		key->data = p;
 	}
 
-	if (!peer->memc.prefix.len) {
-		return;
+	if (peer->memc.prefix.len) {
+		p = ngx_cpymem(buf, peer->memc.prefix.data, peer->memc.prefix.len);
+
+		if (!peer->memc.hex) {
+			p = ngx_cpymem(p, key->data, key->len);
+		}
+
+		key->data = buf;
+		key->len += peer->memc.prefix.len;
 	}
-
-	p = ngx_cpymem(buf, peer->memc.prefix.data, peer->memc.prefix.len);
-
-	if (!peer->memc.hex) {
-		p = ngx_cpymem(p, key->data, key->len);
-	}
-
-	key->data = buf;
-	key->len += peer->memc.prefix.len;
 }
