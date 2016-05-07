@@ -97,12 +97,16 @@ typedef struct {
 
 	ngx_str_t name;
 
+	int udp;
+
 	ngx_connection_t *c;
 
 	ngx_atomic_uint_t id;
 
 	ngx_queue_t recv_ops;
 	ngx_queue_t send_ops;
+
+	ngx_buf_t tmp_recv;
 
 	ngx_queue_t queue;
 } memc_server_st;
@@ -1851,9 +1855,13 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	msgpack_object name, addr, tags, status;
 	const msgpack_object_kv *ptr_kv;
 	const msgpack_object_str *str;
+	ngx_str_t port_str;
 	ngx_queue_t *q;
 	const char *err;
-	int skip_member, have_changed, add_member, remove_member, update_member, insert_member;
+	int skip_member,
+		have_changed,
+		add_member, remove_member, update_member, insert_member,
+		was_udp, is_udp;
 	memc_server_st *server;
 	void *s_addr;
 	uint32_t hash, base_hash;
@@ -1870,6 +1878,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	ngx_event_t *rev, *wev;
 	ngx_socket_t s;
 	ngx_connection_t *sc = NULL;
+	ngx_peer_connection_t pc;
 
 	have_changed = 0;
 
@@ -1921,6 +1930,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		}
 
 		port = 11211;
+		is_udp = 0;
 
 		for (j = 0; j < tags.via.map.size; j++) {
 			ptr_kv = &tags.via.map.ptr[j];
@@ -1958,7 +1968,27 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 				str = &ptr_kv->val.via.str;
 
-				rc = ngx_atoi((u_char *)str->ptr, str->size);
+				port_str.data = (u_char *)str->ptr;
+				port_str.len = str->size;
+
+				if (str->size > sizeof("udp:") - 1
+					&& ngx_strncmp(str->ptr, "udp:", sizeof("udp:") - 1) == 0) {
+					is_udp = 1;
+
+					port_str.data += sizeof("udp:") - 1;
+					port_str.len -= sizeof("udp:") - 1;
+				} else if (str->size > sizeof("tcp:") - 1
+					&& ngx_strncmp(str->ptr, "tcp:", sizeof("tcp:") - 1) == 0) {
+					port_str.data += sizeof("tcp:") - 1;
+					port_str.len -= sizeof("tcp:") - 1;
+				} else if (ngx_strncmp(str->ptr, "udp", str->size) == 0) {
+					is_udp = 1;
+					continue;
+				} else if (ngx_strncmp(str->ptr, "tcp", str->size) == 0) {
+					continue;
+				}
+
+				rc = ngx_atoi(port_str.data, port_str.len);
 				if (rc < 0 || rc > 0xFFFF) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0,
 						"malformed RPC response, "
@@ -2055,47 +2085,77 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
 
+		was_udp = server->udp;
+		server->udp = is_udp;
+
 		if (!insert_member) {
-			if (connect(server->c->fd, &server->addr, server->addr_len) == -1) {
-				ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
-					"connect() failed");
+			if (was_udp && is_udp) {
+				if (connect(server->c->fd, &server->addr, server->addr_len) == -1) {
+					ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
+						"connect() failed");
+					goto error;
+				}
+
+				continue;
+			}
+
+			ngx_close_connection(server->c);
+		}
+
+		if (is_udp) {
+			s = ngx_socket(server->addr.sa_family, SOCK_DGRAM, 0);
+			ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "UDP socket %d", s);
+			if (s == (ngx_socket_t)-1) {
+				ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
+					ngx_socket_n " failed");
 				goto error;
 			}
 
-			continue;
-		}
+			sc = ngx_get_connection(s, c->log);
+			if (!sc) {
+				if (ngx_close_socket(s) == -1) {
+					ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
+						ngx_close_socket_n "failed");
+				}
 
-		s = socket(server->addr.sa_family, SOCK_DGRAM, 0);
-		ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "UDP socket %d", s);
-		if (s == (ngx_socket_t)-1) {
-			ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-				ngx_socket_n " failed");
-			goto error;
-		}
-
-		sc = ngx_get_connection(s, c->log);
-		if (!sc) {
-			if (ngx_close_socket(s) == -1) {
-				ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-					ngx_close_socket_n "failed");
+				goto error;
 			}
 
-			goto error;
-		}
+			if (ngx_nonblocking(s) == -1) {
+				ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
+					ngx_nonblocking_n " failed");
+				goto error;
+			}
+		} else {
+			ngx_memzero(&pc, sizeof(ngx_peer_connection_t));
 
-		if (ngx_nonblocking(s) == -1) {
-			ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-				ngx_nonblocking_n " failed");
-			goto error;
+			pc.sockaddr = &server->addr;
+			pc.socklen = server->addr_len;
+			pc.name = &server->name;
+
+			pc.get = ngx_event_get_peer;
+			pc.log = c->log;
+			pc.log_error = NGX_ERROR_ERR;
+
+			rc = ngx_event_connect_peer(&pc);
+			if (rc == NGX_ERROR || rc == NGX_DECLINED) {
+				ngx_log_error(NGX_LOG_EMERG, c->log, 0,
+					"ngx_event_connect_peer failed");
+				goto error;
+			}
+
+			sc = pc.connection;
 		}
 
 		server->c = sc;
 		sc->data = server;
 
-		sc->recv = ngx_udp_recv;
-		sc->send = ngx_send;
-		sc->recv_chain = ngx_recv_chain;
-		sc->send_chain = ngx_send_chain;
+		if (is_udp) {
+			sc->recv = ngx_udp_recv;
+			sc->send = ngx_send;
+			sc->recv_chain = ngx_recv_chain;
+			sc->send_chain = ngx_send_chain;
+		}
 
 		rev = sc->read;
 		wev = sc->write;
@@ -2105,24 +2165,26 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		wev->log = sc->log;
 		sc->pool = c->pool;
 
-		sc->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
+		if (is_udp) {
+			sc->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
 
-		if (connect(s, &server->addr, server->addr_len) == -1) {
-			ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
-				"connect() failed");
-			goto error;
-		}
+			if (connect(s, &server->addr, server->addr_len) == -1) {
+				ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
+					"connect() failed");
+				goto error;
+			}
 
-		/* UDP sockets are always ready to write */
-		wev->ready = 1;
+			/* UDP sockets are always ready to write */
+			wev->ready = 1;
 
-		event = (ngx_event_flags & NGX_USE_CLEAR_EVENT) ?
-				/* kqueue, epoll */                 NGX_CLEAR_EVENT:
-				/* select, poll, /dev/poll */       NGX_LEVEL_EVENT;
-				/* eventport event type has no meaning: oneshot only */
+			event = (ngx_event_flags & NGX_USE_CLEAR_EVENT) ?
+					/* kqueue, epoll */                 NGX_CLEAR_EVENT:
+					/* select, poll, /dev/poll */       NGX_LEVEL_EVENT;
+					/* eventport event type has no meaning: oneshot only */
 
-		if (ngx_add_event(rev, NGX_READ_EVENT, event) != NGX_OK) {
-			goto error;
+			if (ngx_add_event(rev, NGX_READ_EVENT, event) != NGX_OK) {
+				goto error;
+			}
 		}
 
 		rev->handler = memc_read_handler;
@@ -2130,6 +2192,10 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		/* don't close the socket on error if we've gotten this far */
 		sc = NULL;
+
+		if (!insert_member) {
+			continue;
+		}
 
 		ngx_queue_init(&server->recv_ops);
 		ngx_queue_init(&server->send_ops);
@@ -2420,6 +2486,8 @@ static void memc_read_handler(ngx_event_t *rev)
 	memc_op_st *op;
 	ngx_queue_t *q;
 	ngx_buf_t recv;
+	u_char *new_buf;
+	size_t n;
 	ssize_t size;
 	protocol_binary_response_header *res_hdr;
 	union {
@@ -2430,49 +2498,98 @@ static void memc_read_handler(ngx_event_t *rev)
 	c = rev->data;
 	server = c->data;
 
-	/* 1/4 of the page_size, is it enough? */
-	recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
-	if (!recv.start) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0,
-			"ngx_palloc failed to allocated recv buffer");
-		return;
-	}
+	if (server->tmp_recv.start) {
+		recv = server->tmp_recv;
 
-	recv.pos = recv.start;
-	recv.last = recv.start;
-	recv.end = recv.start + ngx_pagesize / 4;
-
-	size = c->recv(c, recv.last, recv.end - recv.last);
-	if (size > 0) {
-		recv.last += size;
-	} else if (size == 0 || size == NGX_AGAIN) {
-		goto cleanup;
+		server->tmp_recv.start = NULL;
+		server->tmp_recv.pos = NULL;
+		server->tmp_recv.last = NULL;
+		server->tmp_recv.end = NULL;
 	} else {
-		c->error = 1;
-		goto cleanup;
+		/* 1/4 of the page_size, is it enough? */
+		recv.start = ngx_palloc(c->pool, ngx_pagesize / 4);
+		if (!recv.start) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"ngx_palloc failed to allocated recv buffer");
+			return;
+		}
+
+		recv.pos = recv.start;
+		recv.last = recv.start;
+		recv.end = recv.start + ngx_pagesize / 4;
 	}
 
-	if (recv.last - recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "truncated memc packet");
-		goto cleanup;
+	do {
+		n = recv.end - recv.last;
+
+		/* buffer not big enough? enlarge it by twice */
+		if (n == 0) {
+			size = recv.end - recv.start;
+
+			new_buf = ngx_palloc(c->pool, size * 2);
+			if (!new_buf) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"ngx_palloc failed to allocated new recv buffer");
+				return;
+			}
+
+			ngx_memcpy(new_buf, recv.start, size);
+			ngx_pfree(c->pool, recv.start);
+
+			recv.start = new_buf;
+			recv.pos = new_buf;
+			recv.last = new_buf + size;
+			recv.end = new_buf + size * 2;
+
+			n = recv.end - recv.last;
+		}
+
+		size = c->recv(c, recv.last, n);
+
+		if (size > 0) {
+			recv.last += size;
+			continue;
+		} else if (size == 0 || size == NGX_AGAIN) {
+			break;
+		} else {
+			c->error = 1;
+			return;
+		}
+	} while (!server->udp);
+
+	if (server->udp) {
+		if (recv.last - recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "truncated memc packet");
+			goto cleanup;
+		}
+
+		// op->recv.pos[0..1] = request id
+		// op->recv.pos[2..3] = sequence number
+		// op->recv.pos[4..5] = total datagrams
+		// op->recv.pos[6..7] = reserved
+
+		ngx_memcpy(id0.byte, recv.pos, sizeof(id0.byte));
+
+		if (recv.pos[4] != 0 || recv.pos[5] != 1) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"multipacket udp memcached not supported");
+			goto cleanup;
+		}
+
+		recv.pos += 8;
+		res_hdr = (protocol_binary_response_header *)recv.pos;
+	} else {
+		res_hdr = (protocol_binary_response_header *)recv.pos;
+
+		if (recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
+			|| recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
+				+ ntohl(res_hdr->response.bodylen)) {
+			server->tmp_recv = recv;
+			return;
+		}
+
+		id0.u16 = 0; /* GCC produces a maybe-uninitialized error without this */
 	}
-
-	// op->recv.pos[0..1] = request id
-	// op->recv.pos[2..3] = sequence number
-	// op->recv.pos[4..5] = total datagrams
-	// op->recv.pos[6..7] = reserved
-
-	ngx_memcpy(id0.byte, recv.pos, sizeof(id0.byte));
-
-	if (recv.pos[4] != 0 || recv.pos[5] != 1) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0,
-			"multipacket udp memcached not supported");
-		goto cleanup;
-	}
-
-	recv.pos += 8;
-
-	res_hdr = (protocol_binary_response_header *)recv.pos;
 
 	/*if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid memcached response packet");
@@ -2484,7 +2601,8 @@ static void memc_read_handler(ngx_event_t *rev)
 		q = ngx_queue_next(q)) {
 		op = ngx_queue_data(q, memc_op_st, recv_queue);
 
-		if (op->id0 != id0.u16 || op->id1 != res_hdr->response.opaque) {
+		if ((server->udp && op->id0 != id0.u16)
+			|| op->id1 != res_hdr->response.opaque) {
 			continue;
 		}
 
@@ -2502,8 +2620,13 @@ static void memc_read_handler(ngx_event_t *rev)
 		return;
 	}
 
-	ngx_log_error(NGX_LOG_ERR, c->log, 0,
-		"invalid memc id: %ud", id0.u16 | (res_hdr->response.opaque << 16));
+	if (server->udp) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"invalid memc id: %ud", id0.u16 | (res_hdr->response.opaque << 16));
+	} else {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"invalid memc id: %ud", res_hdr->response.opaque);
+	}
 
 cleanup:
 	ngx_pfree(c->pool, recv.start);
@@ -2527,19 +2650,29 @@ static void memc_write_handler(ngx_event_t *wev)
 	q = ngx_queue_head(&server->send_ops);
 	op = ngx_queue_data(q, memc_op_st, send_queue);
 
-	size = c->send(c, op->send.pos, op->send.last - op->send.pos);
-	if (size > 0) {
-		op->send.pos += size;
-	} else if (size == 0 || size == NGX_AGAIN) {
-		return;
-	} else {
-		c->error = 1;
+	while (op->send.pos < op->send.last) {
+		size = c->send(c, op->send.pos, op->send.last - op->send.pos);
+		if (size > 0) {
+			op->send.pos += size;
+
+			if (server->udp) {
+				break;
+			}
+		} else if (size == 0 || size == NGX_AGAIN) {
+			return;
+		} else {
+			c->error = 1;
+			return;
+		}
+	}
+
+	if (!server->udp && op->send.pos != op->send.last) {
 		return;
 	}
 
 	ngx_queue_remove(&op->send_queue);
 
-	if (op->send.pos != op->send.last) {
+	if (server->udp && op->send.pos != op->send.last) {
 		ngx_log_error(NGX_LOG_ERR, op->log, 0, "memc send truncated");
 	} else {
 		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, op->log, 0, "memc send done");
@@ -2589,18 +2722,22 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
 	server = peer->memc.points[hash % peer->memc.npoints].data;
 
-	len = 8;
+	if (server->udp) {
+		hdr_len = 8;
+	} else {
+		hdr_len = 0;
+	}
 
 	switch (cmd) {
 		case PROTOCOL_BINARY_CMD_GET:
-			len += sizeof(protocol_binary_request_get);
+			hdr_len += sizeof(protocol_binary_request_get);
 
 #if NGX_DEBUG
 			cmd_str = "GET";
 #endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_SET:
-			len += sizeof(protocol_binary_request_set);
+			hdr_len += sizeof(protocol_binary_request_set);
 			ext_len = sizeof(((protocol_binary_request_set *)NULL)->message.body);
 
 #if NGX_DEBUG
@@ -2608,7 +2745,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 #endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_DELETE:
-			len += sizeof(protocol_binary_request_delete);
+			hdr_len += sizeof(protocol_binary_request_delete);
 
 #if NGX_DEBUG
 			cmd_str = "DELETE";
@@ -2621,10 +2758,8 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
 		"memcached operation: %s \"%*s\"", cmd_str, kv->key.len, kv->key.data);
 
-	hdr_len = len;
-
 	body_len = ext_len + kv->key.len + kv->value.len;
-	len += body_len;
+	len = hdr_len + body_len;
 
 	data = ngx_palloc(peer->pool, len);
 	if (!data) {
@@ -2636,20 +2771,28 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 	id = ngx_atomic_fetch_add(&server->id, 1);
 
-	// data[0..1] = request id
-	// data[2..3] = sequence number
-	// data[4..5] = total datagrams
-	// data[6..7] = reserved
+	if (server->udp) {
+		// data[0..1] = request id
+		// data[2..3] = sequence number
+		// data[4..5] = total datagrams
+		// data[6..7] = reserved
 
-	id0.u16 = id & 0xffff;
-	id1 = id >> 16;
+		id0.u16 = id & 0xffff;
+		id1 = id >> 16;
 
-	ngx_memcpy(p, id0.byte, sizeof(id0.byte));
+		ngx_memcpy(p, id0.byte, sizeof(id0.byte));
 
-	p[4] = 0;
-	p[5] = 1;
+		p[4] = 0;
+		p[5] = 1;
 
-	req_hdr = (protocol_binary_request_header *)&p[8];
+		req_hdr = (protocol_binary_request_header *)&p[8];
+	} else {
+		id0.u16 = 0;
+		id1 = id;
+
+		req_hdr = (protocol_binary_request_header *)p;
+	}
+
 	p += hdr_len;
 
 	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
