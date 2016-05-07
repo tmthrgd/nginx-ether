@@ -39,6 +39,8 @@
 
 #define SERF_SEQ_STATE_MASK 0x0f
 
+#define MEMC_MAX_KEY_PREFIX_LEN 64
+
 #if !NGX_HTTP_ETHER_HAVE_HTONLL
 #	if NGX_HAVE_LITTLE_ENDIAN
 #		include <byteswap.h>
@@ -144,6 +146,10 @@ typedef struct _peer_st {
 	} serf;
 
 	struct {
+		/* conf directives */
+		ngx_flag_t hex;
+		ngx_str_t prefix;
+
 		ngx_queue_t servers;
 
 		ngx_uint_t npoints;
@@ -188,6 +194,8 @@ static void *create_srv_conf(ngx_conf_t *cf);
 static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
 static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf);
 
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
@@ -239,6 +247,10 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		int *copy);
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
 
+/* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes
+ * buf should be MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2 bytes */
+static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf);
+
 static int g_ssl_ctx_exdata_peer_index = -1;
 static int g_ssl_exdata_memc_op_index = -1;
 
@@ -274,6 +286,8 @@ static const struct serf_cmd_st kSerfCMDs[] = {
 };
 static const size_t kNumSerfCMDs = sizeof(kSerfCMDs) / sizeof(kSerfCMDs[0]);
 
+static ngx_conf_post_t memc_prefix_max_length_post = { memc_prefix_max_length };
+
 static ngx_command_t module_commands[] = {
 	{ ngx_string("ether"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
@@ -288,6 +302,20 @@ static ngx_command_t module_commands[] = {
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(peer_st, serf.auth),
 	  NULL },
+
+	{ ngx_string("ether_session_id_hex"),
+	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+	  ngx_conf_set_flag_slot,
+	  NGX_HTTP_SRV_CONF_OFFSET,
+	  offsetof(peer_st, memc.hex),
+	  NULL },
+
+	{ ngx_string("ether_session_id_prefix"),
+	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+	  ngx_conf_set_str_slot,
+	  NGX_HTTP_SRV_CONF_OFFSET,
+	  offsetof(peer_st, memc.prefix),
+	  &memc_prefix_max_length_post },
 
 	ngx_null_command
 };
@@ -422,7 +450,10 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	 *
 	 *     escf->serf.address = { 0, NULL };
 	 *     escf->serf.auth = { 0, NULL };
+	 *     escf->memc.prefix = { 0, NULL };
 	 */
+
+	escf->memc.hex = NGX_CONF_UNSET;
 
 	return escf;
 }
@@ -445,6 +476,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	ngx_conf_merge_str_value(peer->serf.address, prev->serf.address, "");
 	ngx_conf_merge_str_value(peer->serf.auth, prev->serf.auth, "");
+	ngx_conf_merge_value(peer->memc.hex, prev->memc.hex, 1);
+	ngx_conf_merge_str_value(peer->memc.prefix, prev->memc.prefix, "ether:ssl-session-cache:");
 
 	if (!peer->serf.address.len || ngx_strcmp(peer->serf.address.data, "off") == 0) {
 		return NGX_CONF_OK;
@@ -619,6 +652,17 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	if (cmd->post) {
 		post = cmd->post;
 		return post->post_handler(cf, post, field);
+	}
+
+	return NGX_CONF_OK;
+}
+
+static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
+{
+	ngx_str_t *str = conf;
+
+	if (str->len > MEMC_MAX_KEY_PREFIX_LEN) {
+		return "too long";
 	}
 
 	return NGX_CONF_OK;
@@ -2509,7 +2553,6 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	const protocol_binary_request_set *in_reqs = in_data;
 #if NGX_DEBUG
 	const char *cmd_str;
-	u_char buf[64];
 #endif /* NGX_DEBUG */
 
 	if (!peer->memc.npoints) {
@@ -2555,11 +2598,8 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 			goto error;
 	}
 
-	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
-		"memcached operation: %s \"%*s\"%s",
-		cmd_str,
-		ngx_hex_dump(buf, key->data, ngx_min(key->len, 32)) - buf, buf,
-		key->len > 32 ? "..." : "");
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
+		"memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
 
 	hdr_len = len;
 	body_len = ext_len + key->len;
@@ -2769,6 +2809,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	u_char *session = NULL, *name, *nonce, *p;
 	size_t session_len, out_len;
 	protocol_binary_request_set req;
+	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -2801,6 +2842,8 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 				session, session_len, key.data, key.len)
 		&& CBB_did_write(&cbb, out_len)
 		&& CBB_finish(&cbb, &value.data, &value.len)) {
+		process_session_key_id(peer, &key, buf);
+
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
 		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
@@ -2829,6 +2872,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	EVP_AEAD_CTX aead_ctx;
 	CBS cbs, name, nonce;
 	size_t plaintext_len;
+	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -2842,6 +2886,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 		key.data = id;
 		key.len = len;
+
+		process_session_key_id(peer, &key, buf);
 
 		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, NULL);
 		if (!op) {
@@ -2914,6 +2960,7 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	const peer_st *peer;
 	ngx_str_t key;
 	unsigned int len;
+	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	peer = SSL_CTX_get_ex_data(ssl, g_ssl_ctx_exdata_peer_index);
 	if (!peer) {
@@ -2923,5 +2970,32 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	key.len = len;
 
+	process_session_key_id(peer, &key, buf);
+
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
+}
+
+static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf)
+{
+	u_char *p;
+
+	if (peer->memc.hex) {
+		p = buf + peer->memc.prefix.len;
+
+		key->len = ngx_hex_dump(p, key->data, key->len) - p;
+		key->data = p;
+	}
+
+	if (!peer->memc.prefix.len) {
+		return;
+	}
+
+	p = ngx_cpymem(buf, peer->memc.prefix.data, peer->memc.prefix.len);
+
+	if (!peer->memc.hex) {
+		p = ngx_cpymem(p, key->data, key->len);
+	}
+
+	key->data = buf;
+	key->len += peer->memc.prefix.len;
 }
