@@ -2591,10 +2591,11 @@ static void memc_read_handler(ngx_event_t *rev)
 		id0.u16 = 0; /* GCC produces a maybe-uninitialized error without this */
 	}
 
-	/*if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
-		ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid memcached response packet");
+	if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"invalid memcached magic: %d", res_hdr->response.magic);
 		goto cleanup;
-	}*/
+	}
 
 	for (q = ngx_queue_head(&server->recv_ops);
 		q != ngx_queue_sentinel(&server->recv_ops);
@@ -2873,11 +2874,7 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 
 	res_hdr = (protocol_binary_response_header *)op->recv.pos;
 
-	//assert(res_hdr->response.magic == PROTOCOL_BINARY_RES);
-	if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
-		return NGX_ERROR;
-	}
-
+	assert(res_hdr->response.magic == PROTOCOL_BINARY_RES);
 	assert(op->id1 == res_hdr->response.opaque);
 
 	key_len = ntohs(res_hdr->response.keylen);
