@@ -232,7 +232,7 @@ static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
 static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_str_t *key, const ngx_str_t *value, const void *data);
+		const ngx_keyval_t *kv, const void *data);
 static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
 
@@ -2536,7 +2536,7 @@ static void memc_write_handler(ngx_event_t *wev)
 }
 
 static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_str_t *key, const ngx_str_t *value, const void *in_data)
+		const ngx_keyval_t *kv, const void *in_data)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL, *p;
@@ -2560,10 +2560,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	}
 
 	/* see comment in ngx_crc32.c */
-	if (key->len > 64) {
-		hash = ngx_crc32_long(key->data, key->len);
+	if (kv->key.len > 64) {
+		hash = ngx_crc32_long(kv->key.data, kv->key.len);
 	} else {
-		hash = ngx_crc32_short(key->data, key->len);
+		hash = ngx_crc32_short(kv->key.data, kv->key.len);
 	}
 
 	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
@@ -2599,15 +2599,11 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	}
 
 	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
-		"memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
+		"memcached operation: %s \"%*s\"", cmd_str, kv->key.len, kv->key.data);
 
 	hdr_len = len;
-	body_len = ext_len + key->len;
 
-	if (value) {
-		body_len += value->len;
-	}
-
+	body_len = ext_len + kv->key.len + kv->value.len;
 	len += body_len;
 
 	data = ngx_palloc(peer->pool, len);
@@ -2636,7 +2632,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
 	req_hdr->request.opcode = cmd;
-	req_hdr->request.keylen = htons(key->len);
+	req_hdr->request.keylen = htons(kv->key.len);
 	req_hdr->request.extlen = ext_len;
 	req_hdr->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
 	req_hdr->request.bodylen = htonl(body_len);
@@ -2654,10 +2650,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		}
 	}
 
-	p = ngx_cpymem(p, key->data, key->len);
+	p = ngx_cpymem(p, kv->key.data, kv->key.len);
 
-	if (value) {
-		p = ngx_cpymem(p, value->data, value->len);
+	if (kv->value.len) {
+		p = ngx_cpymem(p, kv->value.data, kv->value.len);
 	}
 
 	op = ngx_pcalloc(peer->pool, sizeof(memc_op_st));
@@ -2802,7 +2798,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
 	const peer_st *peer;
-	ngx_str_t key, value = {0};
+	ngx_keyval_t kv;
 	unsigned int len;
 	EVP_AEAD_CTX aead_ctx;
 	CBB cbb;
@@ -2819,9 +2815,10 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 		return 0;
 	}
 
-	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
-	key.len = len;
+	kv.key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
+	kv.key.len = len;
 
+	ngx_str_null(&kv.value);
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
 #ifndef OPENSSL_NO_FEMTOZIP
@@ -2839,19 +2836,19 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 		&& EVP_AEAD_CTX_seal(&aead_ctx,
 				p, &out_len, session_len + EVP_AEAD_max_overhead(aead_ctx.aead),
 				nonce, EVP_AEAD_nonce_length(aead_ctx.aead),
-				session, session_len, key.data, key.len)
+				session, session_len, kv.key.data, kv.key.len)
 		&& CBB_did_write(&cbb, out_len)
-		&& CBB_finish(&cbb, &value.data, &value.len)) {
-		process_session_key_id(peer, &key, buf);
+		&& CBB_finish(&cbb, &kv.value.data, &kv.value.len)) {
+		process_session_key_id(peer, &kv.key, buf);
 
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
 		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
-		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &key, &value, &req);
+		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &kv, &req);
 	}
 
 	OPENSSL_free(session);
-	OPENSSL_free(value.data);
+	OPENSSL_free(kv.value.data);
 	CBB_cleanup(&cbb);
 
 	EVP_AEAD_CTX_cleanup(&aead_ctx);
@@ -2865,7 +2862,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	const ngx_connection_t *c;
 	memc_op_st *op;
 	const peer_st *peer;
-	ngx_str_t key, value;
+	ngx_keyval_t kv;
+	ngx_str_t value;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
 	ngx_ssl_session_t *sess;
@@ -2884,12 +2882,14 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 			return NULL;
 		}
 
-		key.data = id;
-		key.len = len;
+		kv.key.data = id;
+		kv.key.len = len;
 
-		process_session_key_id(peer, &key, buf);
+		process_session_key_id(peer, &kv.key, buf);
 
-		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, NULL);
+		ngx_str_null(&kv.value);
+
+		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &kv, NULL);
 		if (!op) {
 			return NULL;
 		}
@@ -2958,7 +2958,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 {
 	const peer_st *peer;
-	ngx_str_t key;
+	ngx_keyval_t kv;
 	unsigned int len;
 	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
@@ -2967,12 +2967,14 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 		return;
 	}
 
-	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
-	key.len = len;
+	kv.key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
+	kv.key.len = len;
 
-	process_session_key_id(peer, &key, buf);
+	process_session_key_id(peer, &kv.key, buf);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
+	ngx_str_null(&kv.value);
+
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &kv, NULL);
 }
 
 static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf)
