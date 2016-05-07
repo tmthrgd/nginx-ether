@@ -7,8 +7,6 @@
 
 #include "protocol_binary.h"
 
-#define MEMC_KEYS_ARE_HEX 0
-
 #define INSTALL_KEY_EVENT "install-key"
 #define REMOVE_KEY_EVENT "remove-key"
 #define SET_DEFAULT_KEY_EVENT "set-default-key"
@@ -2509,9 +2507,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	const protocol_binary_request_set *in_reqs = in_data;
 #if NGX_DEBUG
 	const char *cmd_str;
-#if !MEMC_KEYS_ARE_HEX
 	u_char buf[64];
-#endif /* !MEMC_KEYS_ARE_HEX */
 #endif /* NGX_DEBUG */
 
 	if (!peer->memc.npoints) {
@@ -2547,16 +2543,11 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 			goto error;
 	}
 
-#if MEMC_KEYS_ARE_HEX
-	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
-		"memcached operation: %s \"%*s\"", cmd_str, key->len, key->data);
-#else /* MEMC_KEYS_ARE_HEX */
 	ngx_log_debug4(NGX_LOG_DEBUG_EVENT, peer->log, 0,
 		"memcached operation: %s \"%*s%s\"",
 		cmd_str,
 		ngx_hex_dump(buf, key->data, ngx_min(key->len, 32)) - buf, buf,
 		key->len > 32 ? "..." : "");
-#endif /* MEMC_KEYS_ARE_HEX */
 
 	hdr_len = len;
 	body_len = ext_len + key->len;
@@ -2778,9 +2769,6 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	CBB cbb;
 	u_char *session = NULL, *name, *nonce, *p;
 	size_t session_len, out_len;
-#if MEMC_KEYS_ARE_HEX
-	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
-#endif /* MEMC_KEYS_ARE_HEX */
 	protocol_binary_request_set req;
 
 	c = ngx_ssl_get_connection(ssl_conn);
@@ -2814,11 +2802,6 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 				session, session_len, key.data, key.len)
 		&& CBB_did_write(&cbb, out_len)
 		&& CBB_finish(&cbb, &value.data, &value.len)) {
-#if MEMC_KEYS_ARE_HEX
-		key.len = ngx_hex_dump(hex, key.data, key.len) - hex;
-		key.data = hex;
-#endif /* MEMC_KEYS_ARE_HEX */
-
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
 		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
@@ -2847,9 +2830,6 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	EVP_AEAD_CTX aead_ctx;
 	CBS cbs, name, nonce;
 	size_t plaintext_len;
-#if MEMC_KEYS_ARE_HEX
-	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
-#endif /* MEMC_KEYS_ARE_HEX */
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -2861,13 +2841,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 			return NULL;
 		}
 
-#if MEMC_KEYS_ARE_HEX
-		key.data = hex;
-		key.len = ngx_hex_dump(hex, id, len) - hex;
-#else /* MEMC_KEYS_ARE_HEX */
 		key.data = id;
 		key.len = len;
-#endif /* MEMC_KEYS_ARE_HEX */
 
 		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &key, NULL, NULL);
 		if (!op) {
@@ -2940,22 +2915,14 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	const peer_st *peer;
 	ngx_str_t key;
 	unsigned int len;
-#if MEMC_KEYS_ARE_HEX
-	u_char hex[SSL_MAX_SSL_SESSION_ID_LENGTH*2];
-#endif /* MEMC_KEYS_ARE_HEX */
 
 	peer = SSL_CTX_get_ex_data(ssl, g_ssl_ctx_exdata_peer_index);
 	if (!peer) {
 		return;
 	}
 
-#if MEMC_KEYS_ARE_HEX
-	key.data = hex;
-	key.len = ngx_hex_dump(hex, SSL_SESSION_get_id(sess, &len), len) - hex;
-#else /* MEMC_KEYS_ARE_HEX */
 	key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	key.len = len;
-#endif /* MEMC_KEYS_ARE_HEX */
 
 	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &key, NULL, NULL);
 }
