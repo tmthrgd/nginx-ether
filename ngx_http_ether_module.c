@@ -2237,7 +2237,7 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 		uint8_t byte[EVP_AEAD_MAX_NONCE_LENGTH];
 	} new_nonce;
 #if NGX_DEBUG
-	u_char buf[32];
+	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif /* NGX_DEBUG */
 
 	c = ngx_ssl_get_connection(ssl_conn);
@@ -2285,7 +2285,7 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 	const key_st *key;
 	ngx_queue_t *q;
 #if NGX_DEBUG
-	u_char buf[32];
+	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif /* NGX_DEBUG */
 
 	c = ngx_ssl_get_connection(ssl_conn);
