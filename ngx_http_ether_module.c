@@ -108,7 +108,8 @@ typedef struct {
 } memc_server_st;
 
 typedef struct {
-	uint16_t id;
+	uint16_t id0;
+	uint32_t id1;
 
 	ngx_event_t *ev;
 
@@ -2420,10 +2421,11 @@ static void memc_read_handler(ngx_event_t *rev)
 	ngx_queue_t *q;
 	ngx_buf_t recv;
 	ssize_t size;
+	protocol_binary_response_header *res_hdr;
 	union {
 		uint16_t u16;
 		uint8_t byte[2];
-	} id;
+	} id0;
 
 	c = rev->data;
 	server = c->data;
@@ -2450,7 +2452,7 @@ static void memc_read_handler(ngx_event_t *rev)
 		goto cleanup;
 	}
 
-	if (recv.last - recv.pos < 8) {
+	if (recv.last - recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "truncated memc packet");
 		goto cleanup;
 	}
@@ -2460,14 +2462,29 @@ static void memc_read_handler(ngx_event_t *rev)
 	// op->recv.pos[4..5] = total datagrams
 	// op->recv.pos[6..7] = reserved
 
-	ngx_memcpy(id.byte, recv.pos, sizeof(id.byte));
+	ngx_memcpy(id0.byte, recv.pos, sizeof(id0.byte));
+
+	if (recv.pos[4] != 0 || recv.pos[5] != 1) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0,
+			"multipacket udp memcached not supported");
+		goto cleanup;
+	}
+
+	recv.pos += 8;
+
+	res_hdr = (protocol_binary_response_header *)recv.pos;
+
+	/*if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
+		ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid memcached response packet");
+		goto cleanup;
+	}*/
 
 	for (q = ngx_queue_head(&server->recv_ops);
 		q != ngx_queue_sentinel(&server->recv_ops);
 		q = ngx_queue_next(q)) {
 		op = ngx_queue_data(q, memc_op_st, recv_queue);
 
-		if (op->id != id.u16) {
+		if (op->id0 != id0.u16 || op->id1 != res_hdr->response.opaque) {
 			continue;
 		}
 
@@ -2485,7 +2502,8 @@ static void memc_read_handler(ngx_event_t *rev)
 		return;
 	}
 
-	ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid memc id: %ud", id.u16);
+	ngx_log_error(NGX_LOG_ERR, c->log, 0,
+		"invalid memc id: %ud", id0.u16 | (res_hdr->response.opaque << 16));
 
 cleanup:
 	ngx_pfree(c->pool, recv.start);
@@ -2541,10 +2559,12 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL, *p;
 	size_t len, hdr_len, ext_len = 0, body_len;
+	uint64_t id;
 	union {
 		uint16_t u16;
 		uint8_t byte[2];
-	} id;
+	} id0;
+	uint32_t id1;
 	memc_server_st *server;
 	uint32_t hash;
 	protocol_binary_request_header *req_hdr;
@@ -2614,21 +2634,23 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	p = data;
 	ngx_memzero(p, hdr_len);
 
+	id = ngx_atomic_fetch_add(&server->id, 1);
+
 	// data[0..1] = request id
 	// data[2..3] = sequence number
 	// data[4..5] = total datagrams
 	// data[6..7] = reserved
 
-	id.u16 = ngx_atomic_fetch_add(&server->id, 1);
-	ngx_memcpy(p, id.byte, sizeof(id.byte));
+	id0.u16 = id & 0xffff;
+	id1 = id >> 16;
+
+	ngx_memcpy(p, id0.byte, sizeof(id0.byte));
 
 	p[4] = 0;
 	p[5] = 1;
 
-	p += 8;
-
-	req_hdr = (protocol_binary_request_header *)p;
-	p += hdr_len - 8;
+	req_hdr = (protocol_binary_request_header *)&p[8];
+	p += hdr_len;
 
 	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
 	req_hdr->request.opcode = cmd;
@@ -2636,9 +2658,9 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	req_hdr->request.extlen = ext_len;
 	req_hdr->request.datatype = PROTOCOL_BINARY_RAW_BYTES;
 	req_hdr->request.bodylen = htonl(body_len);
+	req_hdr->request.opaque = id1;
 
 	if (in_req) {
-		req_hdr->request.opaque = in_req->message.header.request.opaque;
 		req_hdr->request.cas = htonll(in_req->message.header.request.cas);
 
 		if (cmd == PROTOCOL_BINARY_CMD_SET) {
@@ -2661,7 +2683,8 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		goto error;
 	}
 
-	op->id = id.u16;
+	op->id0 = id0.u16;
+	op->id1 = id1;
 
 	op->peer = peer;
 
@@ -2701,36 +2724,28 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	protocol_binary_response_no_extras *out_res = out_data;
 	protocol_binary_response_get *resg, *out_resg = out_data;
 
-	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
+	if (op->recv.last - op->recv.pos < (ssize_t)sizeof(protocol_binary_response_header)) {
 		return NGX_ERROR;
 	}
 
-	// op->recv.pos[0..1] = request id
-	// op->recv.pos[2..3] = sequence number
-	// op->recv.pos[4..5] = total datagrams
-	// op->recv.pos[6..7] = reserved
+	res_hdr = (protocol_binary_response_header *)op->recv.pos;
 
-	assert(op->id == *(uint16_t *)&op->recv.pos[0]);
-
-	if (op->recv.pos[4] != 0 || op->recv.pos[5] != 1) {
-		return NGX_ERROR;
-	}
-
-	res_hdr = (protocol_binary_response_header *)&op->recv.pos[8];
-
+	//assert(res_hdr->response.magic == PROTOCOL_BINARY_RES);
 	if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
 		return NGX_ERROR;
 	}
 
+	assert(op->id1 == res_hdr->response.opaque);
+
 	key_len = ntohs(res_hdr->response.keylen);
 	body_len = ntohl(res_hdr->response.bodylen);
 
-	if (op->recv.last - op->recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)
+	if (op->recv.last - op->recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
 			+ body_len) {
 		return NGX_ERROR;
 	}
 
-	data.data = op->recv.pos + 8
+	data.data = op->recv.pos
 		+ sizeof(protocol_binary_response_header)
 		+ res_hdr->response.extlen
 		+ key_len;
@@ -2742,7 +2757,6 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 
 	if (out_res) {
 		out_res->message.header.response.status = status;
-		out_res->message.header.response.opaque = res_hdr->response.opaque;
 		out_res->message.header.response.cas = ntohll(res_hdr->response.cas);
 
 		if (res_hdr->response.opcode == PROTOCOL_BINARY_CMD_GET) {
