@@ -2723,22 +2723,13 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
 	server = peer->memc.points[hash % peer->memc.npoints].data;
 
-	if (server->udp) {
-		hdr_len = 8;
-	} else {
-		hdr_len = 0;
-	}
-
 	switch (cmd) {
 		case PROTOCOL_BINARY_CMD_GET:
-			hdr_len += sizeof(protocol_binary_request_get);
-
 #if NGX_DEBUG
 			cmd_str = "GET";
 #endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_SET:
-			hdr_len += sizeof(protocol_binary_request_set);
 			ext_len = sizeof(((protocol_binary_request_set *)NULL)->message.body);
 
 #if NGX_DEBUG
@@ -2746,8 +2737,6 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 #endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_DELETE:
-			hdr_len += sizeof(protocol_binary_request_delete);
-
 #if NGX_DEBUG
 			cmd_str = "DELETE";
 #endif /* NGX_DEBUG */
@@ -2758,6 +2747,12 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
 		"memcached operation: %s \"%*s\"", cmd_str, kv->key.len, kv->key.data);
+
+	hdr_len = sizeof(protocol_binary_request_header);
+
+	if (server->udp) {
+		hdr_len = 8 + hdr_len;
+	}
 
 	body_len = ext_len + kv->key.len + kv->value.len;
 	len = hdr_len + body_len;
@@ -2795,6 +2790,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	}
 
 	p += hdr_len;
+	p += ext_len;
 
 	req_hdr->request.magic = PROTOCOL_BINARY_REQ;
 	req_hdr->request.opcode = cmd;
