@@ -2216,6 +2216,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		ngx_queue_init(&server->recv_ops);
 		ngx_queue_init(&server->send_ops);
 
+		ngx_atomic_fetch_add(&server->id, 1); /* skip 0 */
+
 		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
 		server->name.len = name.via.str.size;
 
@@ -2836,6 +2838,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	ngx_memzero(p, hdr_len);
 
 	id = ngx_atomic_fetch_add(&server->id, 1);
+	if (!id) {
+		/* skip 0 */
+		id = ngx_atomic_fetch_add(&server->id, 1);
+	}
 
 	if (server->udp) {
 		// data[0..1] = request id
