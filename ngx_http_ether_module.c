@@ -53,6 +53,7 @@
 #endif /* !NGX_HTTP_ETHER_HAVE_HTONLL */
 
 typedef struct _peer_st peer_st;
+typedef struct _memc_op_st memc_op_st;
 
 typedef enum {
 	WAITING = 0,
@@ -111,13 +112,17 @@ typedef struct {
 	ngx_queue_t queue;
 } memc_server_st;
 
-typedef struct {
+typedef void (*memc_op_handler)(memc_op_st *op, void *data);
+
+typedef struct _memc_op_st {
 	uint16_t id0;
 	uint32_t id1;
 
-	ngx_event_t *ev;
+	memc_op_handler handler;
+	void *handler_data;
 
 	const peer_st *peer;
+	const memc_server_st *server;
 
 	ngx_log_t *log;
 
@@ -225,6 +230,10 @@ static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ss
 static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		const msgpack_object *members, enum handle_member_resp_body_et todo);
 
+#if NGX_DEBUG
+static void log_memc_version_handler(memc_op_st *op, void *data);
+#endif /* NGX_DEBUG */
+
 static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
 		ngx_log_t *log);
 static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...);
@@ -236,8 +245,11 @@ static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *poi
 static void memc_read_handler(ngx_event_t *rev);
 static void memc_write_handler(ngx_event_t *wev);
 
+static void memc_default_op_handler(memc_op_st *op, void *data);
+static void memc_event_op_handler(memc_op_st *op, void *data);
+
 static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_keyval_t *kv, const void *data);
+		const ngx_keyval_t *kv, void *data);
 static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *data);
 static void memc_cleanup_operation(memc_op_st *op);
 
@@ -1879,6 +1891,10 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	ngx_socket_t s;
 	ngx_connection_t *sc = NULL;
 	ngx_peer_connection_t pc;
+#if NGX_DEBUG
+	memc_op_st *op;
+	ngx_keyval_t kv = {ngx_null_string, ngx_null_string};
+#endif /* NGX_DEBUG */
 
 	have_changed = 0;
 
@@ -2239,6 +2255,18 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		q = ngx_queue_next(q)) {
 		server = ngx_queue_data(q, memc_server_st, queue);
 
+#if NGX_DEBUG
+		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_VERSION, &kv, server);
+
+		if (op) {
+			op->handler = log_memc_version_handler;
+			op->log = c->log;
+		} else {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"memc_start_operation(PROTOCOL_BINARY_CMD_VERSION) failed");
+		}
+#endif /* NGX_DEBUG */
+
 		switch (server->addr.sa_family) {
 #if NGX_HAVE_INET6
 			case AF_INET6:
@@ -2321,6 +2349,30 @@ error:
 
 	return NGX_ERROR;
 }
+
+#if NGX_DEBUG
+static void log_memc_version_handler(memc_op_st *op, void *data)
+{
+	ngx_int_t rc;
+	ngx_str_t value;
+
+	rc = memc_complete_operation(op, &value, NULL);
+
+	if (rc == NGX_AGAIN) {
+		return;
+	}
+
+	if (rc == NGX_OK) {
+		ngx_log_error(NGX_LOG_DEBUG, op->log, 0,
+			"memcached server \"%*s\" version: %*s",
+			op->server->name.len, op->server->name.data,
+			value.len, value.data);
+	}
+
+	/* rc == NGX_OK || rc == NGX_ERROR */
+	memc_cleanup_operation(op);
+}
+#endif /* NGX_DEBUG */
 
 static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
@@ -2610,14 +2662,7 @@ static void memc_read_handler(ngx_event_t *rev)
 		ngx_queue_remove(&op->recv_queue);
 
 		op->recv = recv;
-
-		if (op->ev) {
-			ngx_post_event(op->ev, &ngx_posted_events);
-		} else {
-			memc_complete_operation(op, NULL, NULL);
-			memc_cleanup_operation(op);
-		}
-
+		op->handler(op, op->handler_data);
 		return;
 	}
 
@@ -2687,8 +2732,22 @@ static void memc_write_handler(ngx_event_t *wev)
 	op->send.end = NULL;
 }
 
+static void memc_default_op_handler(memc_op_st *op, void *data)
+{
+	if (memc_complete_operation(op, NULL, NULL) != NGX_AGAIN) {
+		memc_cleanup_operation(op);
+	}
+}
+
+static void memc_event_op_handler(memc_op_st *op, void *data)
+{
+	ngx_event_t *ev = data;
+
+	ngx_post_event(ev, &ngx_posted_events);
+}
+
 static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_keyval_t *kv, const void *in_data)
+		const ngx_keyval_t *kv, void *in_data)
 {
 	memc_op_st *op = NULL;
 	unsigned char *data = NULL, *p;
@@ -2709,19 +2768,25 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	const char *cmd_str;
 #endif /* NGX_DEBUG */
 
-	if (!peer->memc.npoints) {
-		return NULL;
-	}
+	if (cmd == PROTOCOL_BINARY_CMD_VERSION) {
+		server = in_data;
 
-	/* see comment in ngx_crc32.c */
-	if (kv->key.len > 64) {
-		hash = ngx_crc32_long(kv->key.data, kv->key.len);
+		in_req = NULL;
 	} else {
-		hash = ngx_crc32_short(kv->key.data, kv->key.len);
-	}
+		if (!peer->memc.npoints) {
+			return NULL;
+		}
 
-	hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
-	server = peer->memc.points[hash % peer->memc.npoints].data;
+		/* see comment in ngx_crc32.c */
+		if (kv->key.len > 64) {
+			hash = ngx_crc32_long(kv->key.data, kv->key.len);
+		} else {
+			hash = ngx_crc32_short(kv->key.data, kv->key.len);
+		}
+
+		hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
+		server = peer->memc.points[hash % peer->memc.npoints].data;
+	}
 
 	switch (cmd) {
 		case PROTOCOL_BINARY_CMD_GET:
@@ -2739,6 +2804,11 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		case PROTOCOL_BINARY_CMD_DELETE:
 #if NGX_DEBUG
 			cmd_str = "DELETE";
+#endif /* NGX_DEBUG */
+			break;
+		case PROTOCOL_BINARY_CMD_VERSION:
+#if NGX_DEBUG
+			cmd_str = "VERSION";
 #endif /* NGX_DEBUG */
 			break;
 		default:
@@ -2826,7 +2896,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	op->id0 = id0.u16;
 	op->id1 = id1;
 
+	op->handler = memc_default_op_handler;
+
 	op->peer = peer;
+	op->server = server;
 
 	op->send.start = data;
 	op->send.pos = data;
@@ -3044,7 +3117,9 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 			return NULL;
 		}
 
-		op->ev = c->write;
+		op->handler = memc_event_op_handler;
+		op->handler_data = c->write;
+
 		op->log = c->log;
 
 		cln = ngx_pool_cleanup_add(c->pool, 0);
