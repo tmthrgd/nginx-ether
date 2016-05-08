@@ -13,11 +13,6 @@
 #define WIPE_KEYS_EVENT "wipe-keys"
 #define LIST_KEYS_QUERY "list-keys"
 
-#define STREAM_KEY_EVENTS \
-	("user:" INSTALL_KEY_EVENT ",user:" REMOVE_KEY_EVENT \
-	",user:" SET_DEFAULT_KEY_EVENT ",user:" WIPE_KEYS_EVENT \
-	",query:" LIST_KEYS_QUERY)
-
 #define RETRIEVE_KEYS_QUERY "retrieve-keys"
 
 #define MEMC_SERVER_TAG_KEY "role"
@@ -31,7 +26,7 @@
 #define MEMBER_UPDATE_EVENT "member-update"
 
 #define STREAM_MEMBER_EVENTS \
-	(MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT)
+	MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT
 
 #define CHASH_NPOINTS 160
 
@@ -40,6 +35,7 @@
 #define SERF_SEQ_STATE_MASK 0x0f
 
 #define MEMC_MAX_KEY_PREFIX_LEN 64
+#define SERF_MAX_KEY_PREFIX_LEN 64
 
 #if !NGX_HTTP_ETHER_HAVE_HTONLL
 #	if NGX_HAVE_LITTLE_ENDIAN
@@ -147,6 +143,7 @@ typedef struct _peer_st {
 		/* conf directives */
 		ngx_str_t address;
 		ngx_str_t auth;
+		ngx_str_t prefix;
 
 		state_et state;
 
@@ -206,6 +203,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf);
+static char *serf_prefix_max_length(ngx_conf_t *cf, void *data, void *conf);
 
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
@@ -304,6 +302,7 @@ static const struct serf_cmd_st kSerfCMDs[] = {
 static const size_t kNumSerfCMDs = sizeof(kSerfCMDs) / sizeof(kSerfCMDs[0]);
 
 static ngx_conf_post_t memc_prefix_max_length_post = { memc_prefix_max_length };
+static ngx_conf_post_t serf_prefix_max_length_post = { serf_prefix_max_length };
 
 static ngx_command_t module_commands[] = {
 	{ ngx_string("ether"),
@@ -319,6 +318,13 @@ static ngx_command_t module_commands[] = {
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(peer_st, serf.auth),
 	  NULL },
+
+	{ ngx_string("ether_serf_prefix"),
+	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+	  ngx_conf_set_str_slot,
+	  NGX_HTTP_SRV_CONF_OFFSET,
+	  offsetof(peer_st, serf.prefix),
+	  &serf_prefix_max_length_post },
 
 	{ ngx_string("ether_session_id_hex"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
@@ -494,6 +500,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	ngx_conf_merge_str_value(peer->serf.address, prev->serf.address, "");
 	ngx_conf_merge_str_value(peer->serf.auth, prev->serf.auth, "");
 	ngx_conf_merge_value(peer->memc.hex, prev->memc.hex, 1);
+	ngx_conf_merge_str_value(peer->serf.prefix, prev->serf.prefix, "ether:");
 	ngx_conf_merge_str_value(peer->memc.prefix, prev->memc.prefix, "ether:ssl-session-cache:");
 
 	if (!peer->serf.address.len || ngx_strcmp(peer->serf.address.data, "off") == 0) {
@@ -679,6 +686,17 @@ static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
 	ngx_str_t *str = conf;
 
 	if (str->len > MEMC_MAX_KEY_PREFIX_LEN) {
+		return "too long";
+	}
+
+	return NGX_CONF_OK;
+}
+
+static char *serf_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
+{
+	ngx_str_t *str = conf;
+
+	if (str->len > SERF_MAX_KEY_PREFIX_LEN) {
 		return "too long";
 	}
 
@@ -1073,18 +1091,64 @@ static void add_auth_req_body(msgpack_packer *pk, peer_st *peer)
 
 static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer)
 {
+	u_char buf[5 * SERF_MAX_KEY_PREFIX_LEN
+		+ 4 * (sizeof("user:" /*event name*/ ",") - 1)
+		+ sizeof("query:" /*query name*/) - 1
+		+ sizeof(INSTALL_KEY_EVENT REMOVE_KEY_EVENT SET_DEFAULT_KEY_EVENT
+			WIPE_KEYS_EVENT LIST_KEYS_QUERY) - 1
+		+ 1];
+	u_char *p = buf;
+
+	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, INSTALL_KEY_EVENT, sizeof(INSTALL_KEY_EVENT) - 1);
+
+	*p++ = ',';
+
+	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, REMOVE_KEY_EVENT, sizeof(REMOVE_KEY_EVENT) - 1);
+
+	*p++ = ',';
+
+	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, SET_DEFAULT_KEY_EVENT, sizeof(SET_DEFAULT_KEY_EVENT) - 1);
+
+	*p++ = ',';
+
+	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, WIPE_KEYS_EVENT, sizeof(WIPE_KEYS_EVENT) - 1);
+
+	*p++ = ',';
+
+	p = ngx_cpymem(p, "query:", sizeof("query:") - 1);
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, LIST_KEYS_QUERY, sizeof(LIST_KEYS_QUERY) - 1);
+
+	*p = '\0';
+
 	// {"Type": "member-join,user:deploy"}
 
 	msgpack_pack_map(pk, 1);
 
 	msgpack_pack_str(pk, sizeof("Type") - 1);
 	msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
-	msgpack_pack_str(pk, sizeof(STREAM_KEY_EVENTS) - 1);
-	msgpack_pack_str_body(pk, STREAM_KEY_EVENTS, sizeof(STREAM_KEY_EVENTS) - 1);
+	msgpack_pack_str(pk, p - buf);
+	msgpack_pack_str_body(pk, buf, p - buf);
 }
 
 static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer)
 {
+	u_char buf[SERF_MAX_KEY_PREFIX_LEN + sizeof(RETRIEVE_KEYS_QUERY) - 1 + 1];
+	u_char *p = buf;
+
+	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
+	p = ngx_cpymem(p, RETRIEVE_KEYS_QUERY, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+
+	*p = '\0';
+
 	// {
 	// 	"FilterNodes": ["foo", "bar"],
 	// 	"FilterTags": {"role": ".*web.*"},
@@ -1114,8 +1178,8 @@ static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer)
 
 	msgpack_pack_str(pk, sizeof("Name") - 1);
 	msgpack_pack_str_body(pk, "Name", sizeof("Name") - 1);
-	msgpack_pack_str(pk, sizeof(RETRIEVE_KEYS_QUERY) - 1);
-	msgpack_pack_str_body(pk, RETRIEVE_KEYS_QUERY, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+	msgpack_pack_str(pk, p - buf);
+	msgpack_pack_str_body(pk, buf, p - buf);
 
 	msgpack_pack_str(pk, sizeof("Payload") - 1);
 	msgpack_pack_str_body(pk, "Payload", sizeof("Payload") - 1);
@@ -1298,6 +1362,9 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		goto error;
 	}
 
+	assert(name.via.str.size > peer->serf.prefix.len);
+	assert(ngx_strncmp(name.via.str.ptr, peer->serf.prefix.data, peer->serf.prefix.len) == 0);
+
 	if (ngx_strncmp(event.via.str.ptr, "query", event.via.str.size) == 0) {
 		id.type = MSGPACK_OBJECT_POSITIVE_INTEGER;
 
@@ -1307,7 +1374,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			goto error;
 		}
 
-		if (ngx_strncmp(name.via.str.ptr, LIST_KEYS_QUERY, name.via.str.size) == 0) {
+		if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, LIST_KEYS_QUERY,
+				name.via.str.size - peer->serf.prefix.len) == 0) {
 			if (peer->serf.state == WAITING) {
 				peer->serf.state = RESPOND_LIST_KEYS_QUERY;
 				peer->serf.listing_keys_id = id.via.u64;
@@ -1316,8 +1384,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			}
 
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
-				"received " LIST_KEYS_QUERY " query outside of WAITING state, " \
-				"in state: %xd", peer->serf.state);
+				"received %*s query outside of WAITING state, in state: %xd",
+				name.via.str.size, name.via.str.ptr, peer->serf.state);
 			goto error;
 		} else {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
@@ -1334,7 +1402,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		return NGX_ERROR;
 	}
 
-	if (ngx_strncmp(name.via.str.ptr, WIPE_KEYS_EVENT, name.via.str.size) == 0) {
+	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, WIPE_KEYS_EVENT,
+			name.via.str.size - peer->serf.prefix.len) == 0) {
 		num = 0;
 
 		for (q = ngx_queue_head(&peer->ticket_keys);
@@ -1343,8 +1412,9 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			num++;
 		}
 
-		ngx_log_error(NGX_LOG_INFO, c->log, 0, WIPE_KEYS_EVENT " event: removing %d keys, " \
-			"session ticket and cache support disabled", num);
+		ngx_log_error(NGX_LOG_INFO, c->log, 0, "%*s event: removing %d keys, " \
+			"session ticket and cache support disabled",
+			name.via.str.size, name.via.str.ptr, num);
 
 		SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
@@ -1372,7 +1442,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		goto error;
 	}
 
-	if (ngx_strncmp(name.via.str.ptr, INSTALL_KEY_EVENT, name.via.str.size) == 0) {
+	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, INSTALL_KEY_EVENT,
+			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 			goto error;
@@ -1389,8 +1460,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			key = ngx_queue_data(q, key_st, queue);
 
 			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-				ngx_log_error(NGX_LOG_ERR, c->log, 0,
-					INSTALL_KEY_EVENT " event: already have key");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "%*s event: already have key",
+					name.via.str.size, name.via.str.ptr);
 				goto error;
 			}
 		}
@@ -1409,7 +1480,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		key->aead = EVP_aead_aes_128_gcm();
 
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
-	} else if (ngx_strncmp(name.via.str.ptr, REMOVE_KEY_EVENT, name.via.str.size) == 0) {
+	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, REMOVE_KEY_EVENT,
+			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 			goto error;
@@ -1439,15 +1511,16 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 				SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 				SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
-				ngx_log_error(NGX_LOG_ERR, c->log, 0,
-					REMOVE_KEY_EVENT " event: "
-					"on default key, session ticket and cache support disabled");
+				ngx_log_error(NGX_LOG_ERR, c->log, 0, "%*s event: on default key, " \
+					"session ticket and cache support disabled",
+					name.via.str.size, name.via.str.ptr);
 			}
 
 			ngx_pfree(c->pool, key);
 			break;
 		}
-	} else if (ngx_strncmp(name.via.str.ptr, SET_DEFAULT_KEY_EVENT, name.via.str.size) == 0) {
+	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, SET_DEFAULT_KEY_EVENT,
+			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 			goto error;
@@ -1459,8 +1532,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 				SSL_TICKET_KEY_NAME_LEN) - buf, buf);
 
 		if (ngx_queue_empty(&peer->ticket_keys)) {
-			ngx_log_error(NGX_LOG_ERR, c->log, 0,
-					SET_DEFAULT_KEY_EVENT " event: without any keys");
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "%*s event: without any keys",
+				name.via.str.size, name.via.str.ptr);
 			goto error;
 		}
 
@@ -1493,9 +1566,9 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			SSL_CTX_set_options(peer->ssl->ssl.ctx, SSL_OP_NO_TICKET);
 			SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
-			ngx_log_error(NGX_LOG_ERR, c->log, 0,
-				SET_DEFAULT_KEY_EVENT " event: "
-				"on unknown key, session ticket and cache support disabled");
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "%*s event: on unknown key, " \
+				"session ticket and cache support disabled",
+				name.via.str.size, name.via.str.ptr);
 			goto error;
 		}
 	} else {
@@ -1656,7 +1729,8 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 			if (ngx_memcmp(ptr->via.bin.ptr, key->name,
 					SSL_TICKET_KEY_NAME_LEN) == 0) {
 				ngx_log_error(NGX_LOG_INFO, c->log, 0,
-					RETRIEVE_KEYS_QUERY " query: already have key");
+					"%*s" RETRIEVE_KEYS_QUERY " query: already have key",
+					peer->serf.prefix.len, peer->serf.prefix.data);
 				goto is_default_key;
 			}
 		}
@@ -1700,8 +1774,9 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
-			RETRIEVE_KEYS_QUERY " query: "
-			"no valid default key given, session ticket and cache support disabled");
+			"%*s" RETRIEVE_KEYS_QUERY " query: "
+			"no valid default key given, session ticket and cache support disabled",
+			peer->serf.prefix.len, peer->serf.prefix.data);
 	}
 
 #if NGX_DEBUG
