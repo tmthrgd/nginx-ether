@@ -592,6 +592,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		c = peer->serf.prefix.data[peer->serf.prefix.len - 1];
 		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
 			peer->serf.tag_key = peer->serf.prefix;
+		} else if (peer->serf.prefix.len == 1) {
+			ngx_str_set(&peer->serf.tag_key, "ether");
 		} else {
 			peer->serf.tag_key.data = ngx_pstrdup(cf->pool, &peer->serf.prefix);
 			if (!peer->serf.tag_key.data) {
