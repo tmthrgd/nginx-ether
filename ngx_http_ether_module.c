@@ -2943,8 +2943,17 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	protocol_binary_response_no_extras *out_res = out_data;
 	protocol_binary_response_get *resg, *out_resg = out_data;
 
+	if (!op->recv.start) {
+		/* memc_read_handler has not yet been invoked for this op */
+		return NGX_AGAIN;
+	}
+
 	if (op->recv.last - op->recv.pos < (ssize_t)sizeof(protocol_binary_response_header)) {
-		return NGX_ERROR;
+		if (op->server->udp) {
+			return NGX_ERROR;
+		} else {
+			return NGX_AGAIN;
+		}
 	}
 
 	res_hdr = (protocol_binary_response_header *)op->recv.pos;
@@ -2955,9 +2964,17 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	key_len = ntohs(res_hdr->response.keylen);
 	body_len = ntohl(res_hdr->response.bodylen);
 
+	if (res_hdr->response.extlen + key_len > body_len) {
+		return NGX_ERROR;
+	}
+
 	if (op->recv.last - op->recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
 			+ body_len) {
-		return NGX_ERROR;
+		if (op->server->udp) {
+			return NGX_ERROR;
+		} else {
+			return NGX_AGAIN;
+		}
 	}
 
 	data.data = op->recv.pos
