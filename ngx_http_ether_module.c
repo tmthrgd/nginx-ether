@@ -94,6 +94,8 @@ typedef struct {
 
 	int udp;
 
+	const peer_st *peer;
+
 	ngx_connection_t *c;
 
 	ngx_atomic_uint_t id;
@@ -112,10 +114,11 @@ typedef struct _memc_op_st {
 	uint16_t id0;
 	uint32_t id1;
 
+	int is_quiet;
+
 	memc_op_handler handler;
 	void *handler_data;
 
-	const peer_st *peer;
 	const memc_server_st *server;
 
 	ngx_log_t *log;
@@ -2375,6 +2378,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 
+		server->peer = peer;
+
 		ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
 	}
 
@@ -2700,6 +2705,7 @@ static void memc_read_handler(ngx_event_t *rev)
 		uint16_t u16;
 		uint8_t byte[2];
 	} id0;
+	memc_op_st quiet_op = {0};
 
 	c = rev->data;
 	server = c->data;
@@ -2803,6 +2809,26 @@ static void memc_read_handler(ngx_event_t *rev)
 		goto cleanup;
 	}
 
+	switch (res_hdr->response.opcode) {
+		case PROTOCOL_BINARY_CMD_ADDQ:
+		case PROTOCOL_BINARY_CMD_DELETEQ:
+			/* an error has occured */
+
+			quiet_op.id0 = id0.u16;
+			quiet_op.id1 = res_hdr->response.opaque;
+
+			quiet_op.is_quiet = 1;
+
+			quiet_op.server = server;
+
+			quiet_op.log = c->log;
+
+			quiet_op.recv = recv;
+
+			assert(memc_complete_operation(&quiet_op, NULL, NULL) == NGX_ERROR);
+			goto cleanup;
+	}
+
 	for (q = ngx_queue_head(&server->recv_ops);
 		q != ngx_queue_sentinel(&server->recv_ops);
 		q = ngx_queue_next(q)) {
@@ -2878,6 +2904,11 @@ static void memc_write_handler(ngx_event_t *wev)
 		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, op->log, 0, "memc send done");
 	}
 
+	if (op->is_quiet) {
+		memc_cleanup_operation(op);
+		return;
+	}
+
 	ngx_pfree(c->pool, op->send.start);
 
 	op->send.start = NULL;
@@ -2914,6 +2945,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	uint32_t id1;
 	memc_server_st *server;
 	uint32_t hash;
+	int is_quiet = 0;
 	protocol_binary_request_header *req_hdr;
 	protocol_binary_request_set *reqs;
 	const protocol_binary_request_no_extras *in_req = in_data;
@@ -2948,16 +2980,20 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 			cmd_str = "GET";
 #endif /* NGX_DEBUG */
 			break;
-		case PROTOCOL_BINARY_CMD_SET:
+		case PROTOCOL_BINARY_CMD_ADDQ:
+			is_quiet = 1;
+
 			ext_len = sizeof(((protocol_binary_request_set *)NULL)->message.body);
 
 #if NGX_DEBUG
-			cmd_str = "SET";
+			cmd_str = "ADDQ";
 #endif /* NGX_DEBUG */
 			break;
-		case PROTOCOL_BINARY_CMD_DELETE:
+		case PROTOCOL_BINARY_CMD_DELETEQ:
+			is_quiet = 1;
+
 #if NGX_DEBUG
-			cmd_str = "DELETE";
+			cmd_str = "DELETEQ";
 #endif /* NGX_DEBUG */
 			break;
 		case PROTOCOL_BINARY_CMD_VERSION:
@@ -3031,7 +3067,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	if (in_req) {
 		req_hdr->request.cas = htonll(in_req->message.header.request.cas);
 
-		if (cmd == PROTOCOL_BINARY_CMD_SET) {
+		if (cmd == PROTOCOL_BINARY_CMD_ADDQ) {
 			reqs = (protocol_binary_request_set *)req_hdr;
 			reqs->message.body.flags
 				= htonl(in_reqs->message.body.flags);
@@ -3054,9 +3090,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 	op->id0 = id0.u16;
 	op->id1 = id1;
 
+	op->is_quiet = is_quiet;
+
 	op->handler = memc_default_op_handler;
 
-	op->peer = peer;
 	op->server = server;
 
 	op->send.start = data;
@@ -3066,7 +3103,10 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 	op->log = server->c->log;
 
-	ngx_queue_insert_tail(&server->recv_ops, &op->recv_queue);
+	if (!is_quiet) {
+		ngx_queue_insert_tail(&server->recv_ops, &op->recv_queue);
+	}
+
 	ngx_queue_insert_tail(&server->send_ops, &op->send_queue);
 
 	server->c->write->handler(server->c->write);
@@ -3170,6 +3210,8 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 
 static void memc_cleanup_operation(memc_op_st *op)
 {
+	const peer_st *peer = op->server->peer;
+
 	if (ngx_queue_prev(&op->recv_queue)
 		&& ngx_queue_next(ngx_queue_prev(&op->recv_queue)) == &op->recv_queue) {
 		ngx_queue_remove(&op->recv_queue);
@@ -3181,14 +3223,14 @@ static void memc_cleanup_operation(memc_op_st *op)
 	}
 
 	if (op->send.start) {
-		ngx_pfree(op->peer->pool, op->send.start);
+		ngx_pfree(peer->pool, op->send.start);
 	}
 
 	if (op->recv.start) {
-		ngx_pfree(op->peer->pool, op->recv.start);
+		ngx_pfree(peer->pool, op->recv.start);
 	}
 
-	ngx_pfree(op->peer->pool, op);
+	ngx_pfree(peer->pool, op);
 }
 
 static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
@@ -3202,7 +3244,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	CBB cbb;
 	u_char *session = NULL, *name, *nonce, *p;
 	size_t session_len, out_len;
-	protocol_binary_request_set req;
+	protocol_binary_request_add req;
 	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	c = ngx_ssl_get_connection(ssl_conn);
@@ -3242,7 +3284,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
 		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
 
-		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_SET, &kv, &req);
+		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_ADDQ, &kv, &req);
 	}
 
 	OPENSSL_free(session);
@@ -3374,7 +3416,7 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 
 	ngx_str_null(&kv.value);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETE, &kv, NULL);
+	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
 }
 
 static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf)
