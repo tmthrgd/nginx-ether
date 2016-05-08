@@ -202,8 +202,8 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
 static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf);
-static char *serf_prefix_max_length(ngx_conf_t *cf, void *data, void *conf);
+static char *memc_prefix_check(ngx_conf_t *cf, void *data, void *conf);
+static char *serf_prefix_check(ngx_conf_t *cf, void *data, void *conf);
 
 static void serf_read_handler(ngx_event_t *rev);
 static void serf_write_handler(ngx_event_t *wev);
@@ -301,8 +301,8 @@ static const struct serf_cmd_st kSerfCMDs[] = {
 };
 static const size_t kNumSerfCMDs = sizeof(kSerfCMDs) / sizeof(kSerfCMDs[0]);
 
-static ngx_conf_post_t memc_prefix_max_length_post = { memc_prefix_max_length };
-static ngx_conf_post_t serf_prefix_max_length_post = { serf_prefix_max_length };
+static ngx_conf_post_t memc_prefix_check_post = { memc_prefix_check };
+static ngx_conf_post_t serf_prefix_check_post = { serf_prefix_check };
 
 static ngx_command_t module_commands[] = {
 	{ ngx_string("ether"),
@@ -324,7 +324,7 @@ static ngx_command_t module_commands[] = {
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(peer_st, serf.prefix),
-	  &serf_prefix_max_length_post },
+	  &serf_prefix_check_post },
 
 	{ ngx_string("ether_session_id_hex"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
@@ -338,7 +338,7 @@ static ngx_command_t module_commands[] = {
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(peer_st, memc.prefix),
-	  &memc_prefix_max_length_post },
+	  &memc_prefix_check_post },
 
 	ngx_null_command
 };
@@ -473,6 +473,7 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	 *
 	 *     escf->serf.address = { 0, NULL };
 	 *     escf->serf.auth = { 0, NULL };
+	 *     escf->serf.prefix = { 0, NULL };
 	 *     escf->memc.prefix = { 0, NULL };
 	 */
 
@@ -681,7 +682,7 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	return NGX_CONF_OK;
 }
 
-static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
+static char *memc_prefix_check(ngx_conf_t *cf, void *data, void *conf)
 {
 	ngx_str_t *str = conf;
 
@@ -692,12 +693,16 @@ static char *memc_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
 	return NGX_CONF_OK;
 }
 
-static char *serf_prefix_max_length(ngx_conf_t *cf, void *data, void *conf)
+static char *serf_prefix_check(ngx_conf_t *cf, void *data, void *conf)
 {
 	ngx_str_t *str = conf;
 
 	if (str->len > SERF_MAX_KEY_PREFIX_LEN) {
 		return "too long";
+	}
+
+	if (ngx_strchr(str->data, ',')) {
+		return "contains invalid character";
 	}
 
 	return NGX_CONF_OK;
