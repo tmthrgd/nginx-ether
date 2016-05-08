@@ -15,10 +15,8 @@
 
 #define RETRIEVE_KEYS_QUERY "retrieve-keys"
 
-#define MEMC_SERVER_TAG_KEY "role"
-#define MEMC_SERVER_TAG_VAL "memc"
-
-#define MEMC_PORT_TAG_KEY "memc_port"
+#define SERF_ETHER_TAG_MEMC_OPT "memc"
+#define SERF_ETHER_TAG_MEMC_OPT_REGEX ".*memc.*"
 
 #define MEMBER_JOIN_EVENT "member-join"
 #define MEMBER_LEAVE_EVENT "member-leave"
@@ -144,6 +142,8 @@ typedef struct _peer_st {
 		ngx_str_t address;
 		ngx_str_t auth;
 		ngx_str_t prefix;
+
+		ngx_str_t tag_key;
 
 		state_et state;
 
@@ -495,6 +495,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		uint8_t byte[sizeof(uint64_t)];
 	} seq;
 	uint8_t nonce_key[16];
+	u_char c;
 
 	ssl = ngx_http_conf_get_module_srv_conf(cf, ngx_http_ssl_module);
 
@@ -584,6 +585,23 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	peer->serf.seq = seq.u64;
 
 	peer->serf.send.tag = cf->pool;
+
+	if (peer->serf.prefix.len == 0) {
+		ngx_str_set(&peer->serf.tag_key, "ether");
+	} else {
+		c = peer->serf.prefix.data[peer->serf.prefix.len - 1];
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			peer->serf.tag_key = peer->serf.prefix;
+		} else {
+			peer->serf.tag_key.data = ngx_pstrdup(cf->pool, &peer->serf.prefix);
+			if (!peer->serf.tag_key.data) {
+				return NGX_CONF_ERROR;
+			}
+
+			peer->serf.tag_key.len = peer->serf.prefix.len - 1;
+			peer->serf.tag_key.data[peer->serf.tag_key.len] = '\0';
+		}
+	}
 
 	if (RAND_bytes(nonce_key, sizeof(nonce_key)) != 1) {
 		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "RAND_bytes failed");
@@ -1212,10 +1230,11 @@ static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_str(pk, sizeof("Tags") - 1);
 	msgpack_pack_str_body(pk, "Tags", sizeof("Tags") - 1);
 	msgpack_pack_map(pk, 1);
-	msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_KEY) - 1);
-	msgpack_pack_str_body(pk, MEMC_SERVER_TAG_KEY, sizeof(MEMC_SERVER_TAG_KEY) - 1);
-	msgpack_pack_str(pk, sizeof(MEMC_SERVER_TAG_VAL) - 1);
-	msgpack_pack_str_body(pk, MEMC_SERVER_TAG_VAL, sizeof(MEMC_SERVER_TAG_VAL) - 1);
+	msgpack_pack_str(pk, peer->serf.tag_key.len);
+	msgpack_pack_str_body(pk, peer->serf.tag_key.data, peer->serf.tag_key.len);
+	msgpack_pack_str(pk, sizeof(SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
+	msgpack_pack_str_body(pk, SERF_ETHER_TAG_MEMC_OPT_REGEX,
+		sizeof(SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
 
 	msgpack_pack_str(pk, sizeof("Status") - 1);
 	msgpack_pack_str_body(pk, "Status", sizeof("Status") - 1);
@@ -1947,7 +1966,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	msgpack_object name, addr, tags, status;
 	const msgpack_object_kv *ptr_kv;
 	const msgpack_object_str *str;
-	ngx_str_t port_str;
+	u_char *ether, *p, *semicolon;
 	ngx_queue_t *q;
 	const char *err;
 	int skip_member,
@@ -1965,7 +1984,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	unsigned short port;
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
-	size_t i, j, num;
+	size_t i, j, num, len;
 	ngx_int_t event;
 	ngx_event_t *rev, *wev;
 	ngx_socket_t s;
@@ -2019,11 +2038,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			return NGX_ERROR;
 		}
 
-		if (todo == HANDLE_LIST_MEMBERS) {
-			skip_member = 0;
-		} else {
-			skip_member = 1;
-		}
+		skip_member = 1;
 
 		port = 11211;
 		is_udp = 0;
@@ -2038,24 +2053,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			}
 
 			str = &ptr_kv->key.via.str;
-			if (skip_member && ngx_strncmp(str->ptr, MEMC_SERVER_TAG_KEY,
-					str->size) == 0) {
-				if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0,
-						"malformed RPC response, expect value to be string");
-					return NGX_ERROR;
-				}
-
-				str = &ptr_kv->val.via.str;
-				if (ngx_strncmp(str->ptr, MEMC_SERVER_TAG_VAL, str->size) != 0) {
-					break;
-				}
-
-				skip_member = 0;
-				continue;
-			}
-
-			if (ngx_strncmp(str->ptr, MEMC_PORT_TAG_KEY, str->size) == 0) {
+			if (ngx_strncmp(str->ptr, peer->serf.tag_key.data, str->size) == 0) {
 				if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0,
 						"malformed RPC response, expect value to be string");
@@ -2064,39 +2062,108 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 				str = &ptr_kv->val.via.str;
 
-				port_str.data = (u_char *)str->ptr;
-				port_str.len = str->size;
-
-				if (str->size > sizeof("udp:") - 1
-					&& ngx_strncmp(str->ptr, "udp:", sizeof("udp:") - 1) == 0) {
-					is_udp = 1;
-
-					port_str.data += sizeof("udp:") - 1;
-					port_str.len -= sizeof("udp:") - 1;
-				} else if (str->size > sizeof("tcp:") - 1
-					&& ngx_strncmp(str->ptr, "tcp:", sizeof("tcp:") - 1) == 0) {
-					port_str.data += sizeof("tcp:") - 1;
-					port_str.len -= sizeof("tcp:") - 1;
-				} else if (ngx_strncmp(str->ptr, "udp", str->size) == 0) {
-					is_udp = 1;
-					continue;
-				} else if (ngx_strncmp(str->ptr, "tcp", str->size) == 0) {
-					continue;
+				ether = ngx_palloc(c->pool, str->size + 1);
+				if (!ether) {
+					return NGX_ERROR;
 				}
 
-				rc = ngx_atoi(port_str.data, port_str.len);
-				if (rc < 0 || rc > 0xFFFF) {
-					ngx_log_error(NGX_LOG_ERR, c->log, 0,
-						"malformed RPC response, "
-						"expect " MEMC_PORT_TAG_KEY " tag to be "
-						"a valid number");
+				*ngx_cpymem(ether, str->ptr, str->size) = '\0';
 
-					skip_member = 1;
+				p = ether;
+
+				while(1) {
+					semicolon = (u_char *)ngx_strchr(p, ';');
+
+					if (semicolon) {
+						len = semicolon - p;
+						*semicolon = '\0';
+					} else {
+						len = ether + str->size - p;
+					}
+
+					if (ngx_strncmp(p, SERF_ETHER_TAG_MEMC_OPT "=",
+							sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1) == 0) {
+						if (!skip_member) {
+							ngx_log_error(NGX_LOG_ERR, c->log, 0,
+								"%*s contains duplicate tag \"" \
+								SERF_ETHER_TAG_MEMC_OPT "\"",
+								peer->serf.tag_key.len,
+								peer->serf.tag_key.data);
+
+							skip_member = 1;
+							break;
+						}
+
+						skip_member = 0;
+
+						p += sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1;
+						len -= sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1;
+
+						if (ngx_strncmp(p, "udp:", sizeof("udp:") - 1) == 0) {
+							is_udp = 1;
+
+							p += sizeof("udp:") - 1;
+							len -= sizeof("udp:") - 1;
+						} else if (ngx_strncmp(p, "tcp:", sizeof("tcp:") - 1) == 0) {
+							p += sizeof("tcp:") - 1;
+							len -= sizeof("tcp:") - 1;
+						} else if (ngx_strncmp(p, "udp", len) == 0) {
+							is_udp = 1;
+
+							goto next;
+						} else if (ngx_strncmp(p, "tcp", len) == 0) {
+							goto next;
+						}
+
+						rc = ngx_atoi(p, len);
+						if (rc <= 0 || rc > 0xFFFF) {
+							ngx_log_error(NGX_LOG_ERR, c->log, 0,
+								"malformed RPC response, expect "
+								"%*s=" SERF_ETHER_TAG_MEMC_OPT "=.."
+								"to be a valid number",
+								peer->serf.tag_key.len,
+								peer->serf.tag_key.data);
+
+							skip_member = 1;
+							break;
+						}
+
+						port = (unsigned short)rc;
+					} else if (ngx_strncmp(p, SERF_ETHER_TAG_MEMC_OPT,
+							sizeof(SERF_ETHER_TAG_MEMC_OPT) - 1) == 0) {
+						if (!skip_member) {
+							ngx_log_error(NGX_LOG_ERR, c->log, 0,
+								"%*s contains duplicate tag \"" \
+								SERF_ETHER_TAG_MEMC_OPT "\"",
+								peer->serf.tag_key.len,
+								peer->serf.tag_key.data);
+
+							skip_member = 1;
+							break;
+						}
+
+						skip_member = 0;
+					} else {
+						ngx_log_error(NGX_LOG_ERR, c->log, 0,
+							"unrecognized option %*s", len, p);
+
+						skip_member = 1;
+						break;
+					}
+
+				next:
+					if (!semicolon) {
+						break;
+					}
+
+					p = semicolon + 1;
+				}
+
+				ngx_pfree(c->pool, ether);
+
+				if (skip_member) {
 					break;
 				}
-
-				port = (unsigned short)rc;
-				continue;
 			}
 		}
 
@@ -2298,8 +2365,11 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		ngx_atomic_fetch_add(&server->id, 1); /* skip 0 */
 
-		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
 		server->name.len = name.via.str.size;
+		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
+		if (!server->name.data) {
+			return NGX_ERROR;
+		}
 
 		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 
