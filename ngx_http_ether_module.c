@@ -2792,11 +2792,11 @@ done_read:
 		recv.pos += 8;
 		res_hdr = (protocol_binary_response_header *)recv.pos;
 	} else {
-		res_hdr = (protocol_binary_response_header *)recv.pos;
-
 		if (recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)) {
 			goto store_temp;
 		}
+
+		res_hdr = (protocol_binary_response_header *)recv.pos;
 
 		len = sizeof(protocol_binary_response_header) + ntohl(res_hdr->response.bodylen);
 		if (recv.last - recv.pos < (ssize_t)len) {
@@ -2879,12 +2879,7 @@ done_read:
 process_next:
 	if (!server->udp && recv.last - recv.pos > (ssize_t)len) {
 		recv.pos += len;
-
-		if (recv.last - recv.pos >= (ssize_t)sizeof(protocol_binary_response_header)) {
-			goto done_read;
-		} else {
-			goto store_temp;
-		}
+		goto done_read;
 	}
 
 cleanup:
