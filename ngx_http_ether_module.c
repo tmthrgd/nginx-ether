@@ -2040,7 +2040,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			NULL);
 		if (err) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
-			return NGX_ERROR;
+			goto error;
 		}
 
 		skip_member = 1;
@@ -2054,7 +2054,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			if (ptr_kv->key.type != MSGPACK_OBJECT_STR) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0,
 					"malformed RPC response, expect key to be string");
-				return NGX_ERROR;
+				goto error;
 			}
 
 			str = &ptr_kv->key.via.str;
@@ -2062,14 +2062,14 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 				if (ptr_kv->val.type != MSGPACK_OBJECT_STR) {
 					ngx_log_error(NGX_LOG_ERR, c->log, 0,
 						"malformed RPC response, expect value to be string");
-					return NGX_ERROR;
+					goto error;
 				}
 
 				str = &ptr_kv->val.via.str;
 
 				ether = ngx_palloc(c->pool, str->size + 1);
 				if (!ether) {
-					return NGX_ERROR;
+					goto error;
 				}
 
 				*ngx_cpymem(ether, str->ptr, str->size) = '\0';
@@ -2248,7 +2248,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 				ngx_log_error(NGX_LOG_ERR, c->log, 0,
 					"malformed RPC response, expect Addr to be "
 					"an array of length 4 or 16");
-				return NGX_ERROR;
+				goto error;
 		}
 
 		ngx_memcpy(s_addr, addr.via.bin.ptr, addr.via.bin.size);
@@ -2373,7 +2373,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		server->name.len = name.via.str.size;
 		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
 		if (!server->name.data) {
-			return NGX_ERROR;
+			goto error;
 		}
 
 		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
@@ -2405,8 +2405,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	peer->memc.npoints = 0;
 	peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_st) * CHASH_NPOINTS * num);
 	if (!peer->memc.points) {
-		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
-		return NGX_ERROR;
+		goto error;
 	}
 
 	for (q = ngx_queue_head(&peer->memc.servers);
@@ -2482,7 +2481,9 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		}
 	}
 
-	peer->memc.npoints = i + 1;
+	if (peer->memc.npoints) {
+		peer->memc.npoints = i + 1;
+	}
 
 	if (ngx_queue_empty(&peer->memc.servers)) {
 		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
@@ -2504,6 +2505,20 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 error:
 	if (sc) {
 		ngx_close_connection(sc);
+	}
+
+	if (have_changed) {
+		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
+
+		peer->memc.npoints = 0;
+
+		if (peer->memc.points) {
+			ngx_pfree(c->pool, peer->memc.points);
+			peer->memc.points = NULL;
+		}
+
+		ngx_log_error(NGX_LOG_INFO, c->log, 0, "error in handle_member_resp_body after " \
+			"change, session cache support disabled");
 	}
 
 	return NGX_ERROR;
