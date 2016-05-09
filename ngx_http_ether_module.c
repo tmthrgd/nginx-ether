@@ -2919,7 +2919,9 @@ cleanup:
 	return;
 
 store_temp:
-	if (recv.pos != recv.start && recv.end - recv.start >= (ssize_t)(ngx_pagesize * 4)) {
+	if (recv.pos != recv.start
+		&& recv.end - recv.start > (ssize_t)(ngx_pagesize * 4)
+		&& (recv.end - recv.start) - (recv.last - recv.pos) > (ssize_t)ngx_pagesize) {
 		server->tmp_recv.start = ngx_palloc(c->pool, recv.last - recv.pos);
 		if (!server->tmp_recv.start) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
