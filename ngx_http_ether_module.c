@@ -2698,7 +2698,7 @@ static void memc_read_handler(ngx_event_t *rev)
 	ngx_queue_t *q;
 	ngx_buf_t recv;
 	u_char *new_buf;
-	size_t n;
+	size_t n, len = 0 /* maybe-uninitialized in GCC */;
 	ssize_t size;
 	protocol_binary_response_header *res_hdr;
 	union {
@@ -2769,6 +2769,7 @@ static void memc_read_handler(ngx_event_t *rev)
 		}
 	} while (!server->udp);
 
+done_read:
 	if (server->udp) {
 		if (recv.last - recv.pos < 8 + (ssize_t)sizeof(protocol_binary_response_header)) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "truncated memc packet");
@@ -2793,11 +2794,13 @@ static void memc_read_handler(ngx_event_t *rev)
 	} else {
 		res_hdr = (protocol_binary_response_header *)recv.pos;
 
-		if (recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
-			|| recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)
-				+ ntohl(res_hdr->response.bodylen)) {
-			server->tmp_recv = recv;
-			return;
+		if (recv.last - recv.pos < (ssize_t)sizeof(protocol_binary_response_header)) {
+			goto store_temp;
+		}
+
+		len = sizeof(protocol_binary_response_header) + ntohl(res_hdr->response.bodylen);
+		if (recv.last - recv.pos < (ssize_t)len) {
+			goto store_temp;
 		}
 
 		id0.u16 = 0; /* GCC produces a maybe-uninitialized error without this */
@@ -2806,7 +2809,7 @@ static void memc_read_handler(ngx_event_t *rev)
 	if (res_hdr->response.magic != PROTOCOL_BINARY_RES) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"invalid memcached magic: %d", res_hdr->response.magic);
-		goto cleanup;
+		goto process_next;
 	}
 
 	switch (res_hdr->response.opcode) {
@@ -2826,7 +2829,7 @@ static void memc_read_handler(ngx_event_t *rev)
 			quiet_op.recv = recv;
 
 			assert(memc_complete_operation(&quiet_op, NULL, NULL) == NGX_ERROR);
-			goto cleanup;
+			goto process_next;
 	}
 
 	for (q = ngx_queue_head(&server->recv_ops);
@@ -2841,9 +2844,28 @@ static void memc_read_handler(ngx_event_t *rev)
 
 		ngx_queue_remove(&op->recv_queue);
 
-		op->recv = recv;
+		if (!server->udp && recv.last - recv.pos > (ssize_t)len) {
+			op->recv.start = ngx_palloc(c->pool, len);
+			if (!op->recv.start) {
+				ngx_log_error(NGX_LOG_ERR, c->log, 0,
+					"ngx_palloc failed to allocated recv buffer");
+				return;
+			}
+
+			op->recv.pos = op->recv.start;
+			op->recv.last = ngx_cpymem(op->recv.pos, recv.pos, len);
+			op->recv.end = op->recv.last;
+		} else {
+			op->recv = recv;
+		}
+
 		op->handler(op, op->handler_data);
-		return;
+
+		if (!server->udp && recv.last - recv.pos > (ssize_t)len) {
+			goto process_next;
+		} else {
+			return;
+		}
 	}
 
 	if (server->udp) {
@@ -2854,8 +2876,39 @@ static void memc_read_handler(ngx_event_t *rev)
 			"invalid memc id: %ud", res_hdr->response.opaque);
 	}
 
+process_next:
+	if (!server->udp && recv.last - recv.pos > (ssize_t)len) {
+		recv.pos += len;
+
+		if (recv.last - recv.pos >= (ssize_t)sizeof(protocol_binary_response_header)) {
+			goto done_read;
+		} else {
+			goto store_temp;
+		}
+	}
+
 cleanup:
 	ngx_pfree(c->pool, recv.start);
+	return;
+
+store_temp:
+	if (recv.pos != recv.start && recv.end - recv.start >= (ssize_t)(ngx_pagesize * 4)) {
+		server->tmp_recv.start = ngx_palloc(c->pool, recv.last - recv.pos);
+		if (!server->tmp_recv.start) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0,
+				"ngx_palloc failed to allocated recv buffer");
+
+			server->tmp_recv = recv;
+			return;
+		}
+
+		server->tmp_recv.pos = server->tmp_recv.start;
+		server->tmp_recv.last = ngx_cpymem(server->tmp_recv.pos, recv.pos, recv.last - recv.pos);
+		server->tmp_recv.end = server->tmp_recv.last;
+		goto cleanup;
+	} else {
+		server->tmp_recv = recv;
+	}
 }
 
 static void memc_write_handler(ngx_event_t *wev)
