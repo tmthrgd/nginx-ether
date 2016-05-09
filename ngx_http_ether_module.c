@@ -1972,7 +1972,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	const msgpack_object_kv *ptr_kv;
 	const msgpack_object_str *str;
 	u_char *ether, *p, *semicolon;
-	ngx_queue_t *q;
+	ngx_queue_t *q, *prev_q;
 	const char *err;
 	int skip_member,
 		have_changed,
@@ -1995,8 +1995,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	ngx_socket_t s;
 	ngx_connection_t *sc = NULL;
 	ngx_peer_connection_t pc;
-#if NGX_DEBUG
 	memc_op_st *op;
+#if NGX_DEBUG
 	ngx_keyval_t kv = {ngx_null_string, ngx_null_string};
 #endif /* NGX_DEBUG */
 
@@ -2196,6 +2196,23 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 				have_changed = 1;
 
 				ngx_queue_remove(q);
+
+				ngx_close_connection(server->c);
+
+				for (q = ngx_queue_head(&server->recv_ops);
+					q != ngx_queue_sentinel(&server->recv_ops);
+					q = ngx_queue_next(q)) {
+					op = ngx_queue_data(q, memc_op_st, recv_queue);
+
+					prev_q = ngx_queue_prev(q);
+					memc_cleanup_operation(op);
+					q = prev_q;
+				}
+
+				if (server->tmp_recv.start) {
+					ngx_pfree(c->pool, server->tmp_recv.start);
+				}
+
 				ngx_pfree(c->pool, server);
 			} else {
 				/* update_member */
