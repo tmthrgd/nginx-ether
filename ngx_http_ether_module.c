@@ -2951,52 +2951,45 @@ static void memc_write_handler(ngx_event_t *wev)
 	c = wev->data;
 	server = c->data;
 
-	if (ngx_queue_empty(&server->send_ops)) {
-		return;
-	}
+	while (!ngx_queue_empty(&server->send_ops)) {
+		q = ngx_queue_head(&server->send_ops);
+		op = ngx_queue_data(q, memc_op_st, send_queue);
 
-	q = ngx_queue_head(&server->send_ops);
-	op = ngx_queue_data(q, memc_op_st, send_queue);
+		while (op->send.pos < op->send.last) {
+			size = c->send(c, op->send.pos, op->send.last - op->send.pos);
+			if (size > 0) {
+				op->send.pos += size;
 
-	while (op->send.pos < op->send.last) {
-		size = c->send(c, op->send.pos, op->send.last - op->send.pos);
-		if (size > 0) {
-			op->send.pos += size;
-
-			if (server->udp) {
-				break;
+				if (server->udp) {
+					break;
+				}
+			} else if (size == 0 || size == NGX_AGAIN) {
+				return;
+			} else {
+				c->error = 1;
+				return;
 			}
-		} else if (size == 0 || size == NGX_AGAIN) {
-			return;
+		}
+
+		ngx_queue_remove(&op->send_queue);
+
+		if (server->udp && op->send.pos != op->send.last) {
+			ngx_log_error(NGX_LOG_ERR, op->log, 0, "memc send truncated");
 		} else {
-			c->error = 1;
-			return;
+			ngx_log_debug0(NGX_LOG_DEBUG_HTTP, op->log, 0, "memc send done");
+		}
+
+		if (op->is_quiet) {
+			memc_cleanup_operation(op);
+		} else {
+			ngx_pfree(c->pool, op->send.start);
+
+			op->send.start = NULL;
+			op->send.pos = NULL;
+			op->send.last = NULL;
+			op->send.end = NULL;
 		}
 	}
-
-	if (!server->udp && op->send.pos != op->send.last) {
-		return;
-	}
-
-	ngx_queue_remove(&op->send_queue);
-
-	if (server->udp && op->send.pos != op->send.last) {
-		ngx_log_error(NGX_LOG_ERR, op->log, 0, "memc send truncated");
-	} else {
-		ngx_log_debug0(NGX_LOG_DEBUG_HTTP, op->log, 0, "memc send done");
-	}
-
-	if (op->is_quiet) {
-		memc_cleanup_operation(op);
-		return;
-	}
-
-	ngx_pfree(c->pool, op->send.start);
-
-	op->send.start = NULL;
-	op->send.pos = NULL;
-	op->send.last = NULL;
-	op->send.end = NULL;
 }
 
 static void memc_default_op_handler(memc_op_st *op, void *data)
