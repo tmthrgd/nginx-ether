@@ -7,33 +7,34 @@
 
 #include "protocol_binary.h"
 
-#define INSTALL_KEY_EVENT "install-key"
-#define REMOVE_KEY_EVENT "remove-key"
-#define SET_DEFAULT_KEY_EVENT "set-default-key"
-#define WIPE_KEYS_EVENT "wipe-keys"
-#define LIST_KEYS_QUERY "list-keys"
+#define NGX_ETHER_INSTALL_KEY_EVENT "install-key"
+#define NGX_ETHER_REMOVE_KEY_EVENT "remove-key"
+#define NGX_ETHER_SET_DEFAULT_KEY_EVENT "set-default-key"
+#define NGX_ETHER_WIPE_KEYS_EVENT "wipe-keys"
+#define NGX_ETHER_LIST_KEYS_QUERY "list-keys"
 
-#define RETRIEVE_KEYS_QUERY "retrieve-keys"
+#define NGX_ETHER_RETRIEVE_KEYS_QUERY "retrieve-keys"
 
-#define SERF_ETHER_TAG_MEMC_OPT "memc"
-#define SERF_ETHER_TAG_MEMC_OPT_REGEX ".*memc.*"
+#define NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT "memc"
+#define NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT_REGEX ".*memc.*"
 
-#define MEMBER_JOIN_EVENT "member-join"
-#define MEMBER_LEAVE_EVENT "member-leave"
-#define MEMBER_FAILED_EVENT "member-failed"
-#define MEMBER_UPDATE_EVENT "member-update"
+#define NGX_ETHER_MEMBER_JOIN_EVENT "member-join"
+#define NGX_ETHER_MEMBER_LEAVE_EVENT "member-leave"
+#define NGX_ETHER_MEMBER_FAILED_EVENT "member-failed"
+#define NGX_ETHER_MEMBER_UPDATE_EVENT "member-update"
 
-#define STREAM_MEMBER_EVENTS \
-	MEMBER_JOIN_EVENT "," MEMBER_LEAVE_EVENT "," MEMBER_FAILED_EVENT "," MEMBER_UPDATE_EVENT
+#define NGX_ETHER_STREAM_MEMBER_EVENTS \
+	(NGX_ETHER_MEMBER_JOIN_EVENT "," NGX_ETHER_MEMBER_LEAVE_EVENT "," \
+	NGX_ETHER_MEMBER_FAILED_EVENT "," NGX_ETHER_MEMBER_UPDATE_EVENT)
 
-#define CHASH_NPOINTS 160
+#define NGX_ETHER_CHASH_NPOINTS 160
 
-#define REALTIME_MAXDELTA 60*60*24*30
+#define NGX_ETHER_REALTIME_MAXDELTA 60*60*24*30
 
-#define SERF_SEQ_STATE_MASK 0x0f
+#define NGX_ETHER_SERF_SEQ_STATE_MASK 0x0f
 
-#define MEMC_MAX_KEY_PREFIX_LEN 64
-#define SERF_MAX_KEY_PREFIX_LEN 64
+#define NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN 64
+#define NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN 64
 
 #if !NGX_HTTP_ETHER_HAVE_HTONLL
 #	if NGX_HAVE_LITTLE_ENDIAN
@@ -46,24 +47,24 @@
 #	endif /* NGX_HAVE_LITTLE_ENDIAN */
 #endif /* !NGX_HTTP_ETHER_HAVE_HTONLL */
 
-typedef struct _peer_st peer_st;
-typedef struct _memc_op_st memc_op_st;
+typedef struct _ngx_ether_peer_st ngx_ether_peer_st;
+typedef struct _ngx_ether_memc_op_st ngx_ether_memc_op_st;
 
 typedef enum {
-	WAITING = 0,
-	HANDSHAKING,
-	AUTHENTICATING,
-	STREAM_KEY_EVSUB,
-	RETRIEVE_KEYS,
-	STREAM_MEMBER_EVSUB,
-	LISTING_MEMBERS,
-	RESPOND_LIST_KEYS_QUERY
-} state_et;
+	NGX_ETHER_WAITING = 0,
+	NGX_ETHER_HANDSHAKING,
+	NGX_ETHER_AUTHENTICATING,
+	NGX_ETHER_STREAM_KEY_EVSUB,
+	NGX_ETHER_RETRIEVE_KEYS,
+	NGX_ETHER_STREAM_MEMBER_EVSUB,
+	NGX_ETHER_LISTING_MEMBERS,
+	NGX_ETHER_RESPOND_LIST_KEYS_QUERY
+} ngx_ether_state_et;
 
 typedef struct {
 	uint32_t hash;
 	void *data;
-} chash_point_st;
+} ngx_ether_chash_point_st;
 
 typedef struct {
 	u_char name[SSL_TICKET_KEY_NAME_LEN];
@@ -78,7 +79,7 @@ typedef struct {
 	int was_default;
 
 	ngx_queue_t queue;
-} key_st;
+} ngx_ether_key_st;
 
 typedef struct {
 	union {
@@ -94,7 +95,7 @@ typedef struct {
 
 	int udp;
 
-	const peer_st *peer;
+	const ngx_ether_peer_st *peer;
 
 	ngx_connection_t *c;
 
@@ -106,20 +107,20 @@ typedef struct {
 	ngx_buf_t tmp_recv;
 
 	ngx_queue_t queue;
-} memc_server_st;
+} ngx_ether_memc_server_st;
 
-typedef void (*memc_op_handler)(memc_op_st *op, void *data);
+typedef void (*ngx_ether_memc_op_handler)(ngx_ether_memc_op_st *op, void *data);
 
-typedef struct _memc_op_st {
+typedef struct _ngx_ether_memc_op_st {
 	uint16_t id0;
 	uint32_t id1;
 
 	int is_quiet;
 
-	memc_op_handler handler;
+	ngx_ether_memc_op_handler handler;
 	void *handler_data;
 
-	const memc_server_st *server;
+	const ngx_ether_memc_server_st *server;
 
 	ngx_log_t *log;
 
@@ -128,9 +129,9 @@ typedef struct _memc_op_st {
 
 	ngx_queue_t recv_queue;
 	ngx_queue_t send_queue;
-} memc_op_st;
+} ngx_ether_memc_op_st;
 
-typedef struct _peer_st {
+typedef struct _ngx_ether_peer_st {
 	struct {
 		ngx_peer_connection_t pc;
 
@@ -148,7 +149,7 @@ typedef struct _peer_st {
 
 		ngx_str_t tag_key;
 
-		state_et state;
+		ngx_ether_state_et state;
 
 		uint64_t seq;
 
@@ -164,7 +165,7 @@ typedef struct _peer_st {
 		ngx_queue_t servers;
 
 		ngx_uint_t npoints;
-		chash_point_st *points;
+		ngx_ether_chash_point_st *points;
 	} memc;
 
 	AES_KEY nonce_key;
@@ -175,228 +176,240 @@ typedef struct _peer_st {
 	ngx_http_ssl_srv_conf_t *ssl;
 
 	ngx_queue_t ticket_keys;
-	key_st *default_ticket_key;
-} peer_st;
+	ngx_ether_key_st *default_ticket_key;
+} ngx_ether_peer_st;
 
-typedef void (*add_serf_req_body_pt)(msgpack_packer *pk, peer_st *peer);
-typedef ngx_int_t (*handle_serf_resp_pt)(ngx_connection_t *c, peer_st *peer, ssize_t size);
+typedef void (*ngx_ether_add_serf_req_body_pt)(msgpack_packer *pk, ngx_ether_peer_st *peer);
+typedef ngx_int_t (*ngx_ether_handle_serf_resp_pt)(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
 
-struct serf_cmd_st {
-	state_et state;
+typedef struct {
+	ngx_ether_state_et state;
 
 	ngx_str_t name;
 
-	add_serf_req_body_pt add_serf_req_body;
-	handle_serf_resp_pt handle_serf_resp;
-};
+	ngx_ether_add_serf_req_body_pt add_serf_req_body;
+	ngx_ether_handle_serf_resp_pt handle_serf_resp;
+} ngx_ether_serf_cmd_st;
 
-enum handle_member_resp_body_et {
-	HANDLE_LIST_MEMBERS,
-	HANDLE_ADD_MEMBER,
-	HANDLE_REMOVE_MEMBER,
-	HANDLE_UPDATE_MEMBER,
-};
+typedef enum {
+	NGX_ETHER_HANDLE_LIST_MEMBERS,
+	NGX_ETHER_HANDLE_ADD_MEMBER,
+	NGX_ETHER_HANDLE_REMOVE_MEMBER,
+	NGX_ETHER_HANDLE_UPDATE_MEMBER,
+} ngx_ether_handle_member_resp_body_et;
 
 typedef struct {
-	memc_op_st *op;
+	ngx_ether_memc_op_st *op;
 	ngx_event_t *ev;
-} get_session_cleanup_st;
+} ngx_ether_get_session_cleanup_st;
 
-static ngx_int_t init_process(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ether_init_process(ngx_cycle_t *cycle);
 
-static void cleanup_peer(void *data);
+static void ngx_ether_cleanup_peer(void *data);
 
-static void *create_srv_conf(ngx_conf_t *cf);
-static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
+static void *ngx_ether_create_srv_conf(ngx_conf_t *cf);
+static char *ngx_ether_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child);
 
-static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_ether_set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-static char *memc_prefix_check(ngx_conf_t *cf, void *data, void *conf);
-static char *serf_prefix_check(ngx_conf_t *cf, void *data, void *conf);
+static char *ngx_ether_memc_prefix_check(ngx_conf_t *cf, void *data, void *conf);
+static char *ngx_ether_serf_prefix_check(ngx_conf_t *cf, void *data, void *conf);
 
-static void serf_read_handler(ngx_event_t *rev);
-static void serf_write_handler(ngx_event_t *wev);
+static void ngx_ether_serf_read_handler(ngx_event_t *rev);
+static void ngx_ether_serf_write_handler(ngx_event_t *wev);
 
-static int serf_cmd_state_cmp(const void *in_a, const void *in_b);
+static int ngx_ether_serf_cmd_state_cmp(const void *in_a, const void *in_b);
 
-static void add_handshake_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_auth_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_member_ev_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer);
-static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer);
+static void ngx_ether_add_handshake_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_auth_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_key_ev_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_key_query_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_member_ev_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_list_members_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
+static void ngx_ether_add_respond_list_keys_body(msgpack_packer *pk, ngx_ether_peer_st *peer);
 
-static ngx_int_t handle_handshake_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
-static ngx_int_t handle_auth_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
-static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
-static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
-static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
-static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ssize_t size);
+static ngx_int_t ngx_ether_handle_handshake_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
+static ngx_int_t ngx_ether_handle_auth_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
+static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
+static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
+static ngx_int_t ngx_ether_handle_member_ev_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
+static ngx_int_t ngx_ether_handle_list_members_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size);
 
-static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
-		const msgpack_object *members, enum handle_member_resp_body_et todo);
+static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		const msgpack_object *members, ngx_ether_handle_member_resp_body_et todo);
 
 #if NGX_DEBUG
-static void log_memc_version_handler(memc_op_st *op, void *data);
+static void ngx_ether_log_memc_version_handler(ngx_ether_memc_op_st *op, void *data);
 #endif /* NGX_DEBUG */
 
-static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
+static ngx_int_t ngx_ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
 		ngx_log_t *log);
-static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...);
-static int ether_msgpack_write(void *data, const char *buf, size_t len);
+static const char *ngx_ether_msgpack_parse_map(const msgpack_object *obj, ...);
+static int ngx_ether_msgpack_write(void *data, const char *buf, size_t len);
 
-static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two);
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *point, uint32_t hash);
+static int ngx_libc_cdecl ngx_ether_chash_cmp_points(const void *one, const void *two);
+static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
+		const ngx_ether_chash_point_st *point, uint32_t hash);
 
-static void memc_read_handler(ngx_event_t *rev);
-static void memc_write_handler(ngx_event_t *wev);
+static void ngx_ether_memc_read_handler(ngx_event_t *rev);
+static void ngx_ether_memc_write_handler(ngx_event_t *wev);
 
-static void memc_default_op_handler(memc_op_st *op, void *data);
-static void memc_event_op_handler(memc_op_st *op, void *data);
+static void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data);
+static void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data);
 
-static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_keyval_t *kv, void *data);
-static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *data);
-static void memc_cleanup_operation(memc_op_st *op);
+static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer_st *peer,
+		protocol_binary_command cmd, const ngx_keyval_t *kv, void *data);
+static ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op,
+		ngx_str_t *value, void *data);
+static void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op);
 
-static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
+static int ngx_ether_session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc);
-static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
+static int ngx_ether_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
 		EVP_AEAD_CTX *ctx);
-static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name, EVP_AEAD_CTX *ctx);
+static int ngx_ether_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
+		EVP_AEAD_CTX *ctx);
 
-static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
-static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
-		int *copy);
-static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
+static int ngx_ether_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
+static ngx_ssl_session_t *ngx_ether_get_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id,
+		int len, int *copy);
+static void ngx_ether_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
 
 /* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes
  * buf should be MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2 bytes */
-static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf);
+static inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer, ngx_str_t *key,
+		u_char *buf);
 
-static void get_session_cleanup_handler(void *data);
-static void get_session_timeout_handler(ngx_event_t *ev);
+static void ngx_ether_get_session_cleanup_handler(void *data);
+static void ngx_ether_get_session_timeout_handler(ngx_event_t *ev);
 
 static int g_ssl_ctx_exdata_peer_index = -1;
 static int g_ssl_exdata_memc_op_index = -1;
 static int g_ssl_exdata_get_session_timeout_index = -1;
 
-static const struct serf_cmd_st kSerfCMDs[] = {
-	{ HANDSHAKING,
+static const ngx_ether_serf_cmd_st ngx_ether_serf_cmds[] = {
+	{ NGX_ETHER_HANDSHAKING,
 	  ngx_string("handshake"),
-	  add_handshake_req_body,
-	  handle_handshake_resp },
-	{ AUTHENTICATING,
+	  ngx_ether_add_handshake_req_body,
+	  ngx_ether_handle_handshake_resp },
+	{ NGX_ETHER_AUTHENTICATING,
 	  ngx_string("auth"),
-	  add_auth_req_body,
-	  handle_auth_resp },
-	{ STREAM_KEY_EVSUB,
+	  ngx_ether_add_auth_req_body,
+	  ngx_ether_handle_auth_resp },
+	{ NGX_ETHER_STREAM_KEY_EVSUB,
 	  ngx_string("stream"),
-	  add_key_ev_req_body,
-	  handle_key_ev_resp },
-	{ RETRIEVE_KEYS,
+	  ngx_ether_add_key_ev_req_body,
+	  ngx_ether_handle_key_ev_resp },
+	{ NGX_ETHER_RETRIEVE_KEYS,
 	  ngx_string("query"),
-	  add_key_query_req_body,
-	  handle_key_query_resp },
-	{ STREAM_MEMBER_EVSUB,
+	  ngx_ether_add_key_query_req_body,
+	  ngx_ether_handle_key_query_resp },
+	{ NGX_ETHER_STREAM_MEMBER_EVSUB,
 	  ngx_string("stream"),
-	  add_member_ev_req_body,
-	  handle_member_ev_resp },
-	{ LISTING_MEMBERS,
+	  ngx_ether_add_member_ev_req_body,
+	  ngx_ether_handle_member_ev_resp },
+	{ NGX_ETHER_LISTING_MEMBERS,
 	  ngx_string("members-filtered"),
-	  add_list_members_req_body,
-	  handle_list_members_resp },
-	{ RESPOND_LIST_KEYS_QUERY,
+	  ngx_ether_add_list_members_req_body,
+	  ngx_ether_handle_list_members_resp },
+	{ NGX_ETHER_RESPOND_LIST_KEYS_QUERY,
 	  ngx_string("respond"),
-	  add_respond_list_keys_body,
+	  ngx_ether_add_respond_list_keys_body,
 	  NULL },
 };
-static const size_t kNumSerfCMDs = sizeof(kSerfCMDs) / sizeof(kSerfCMDs[0]);
+static const size_t ngx_ether_num_serf_cmds =
+	sizeof(ngx_ether_serf_cmds) / sizeof(ngx_ether_serf_cmds[0]);
 
-static ngx_conf_post_t memc_prefix_check_post = { memc_prefix_check };
-static ngx_conf_post_t serf_prefix_check_post = { serf_prefix_check };
+static ngx_conf_post_t ngx_ether_memc_prefix_check_post = { ngx_ether_memc_prefix_check };
+static ngx_conf_post_t ngx_ether_serf_prefix_check_post = { ngx_ether_serf_prefix_check };
 
-static ngx_command_t module_commands[] = {
+static ngx_command_t ngx_ether_module_commands[] = {
 	{ ngx_string("ether"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, serf.address),
+	  offsetof(ngx_ether_peer_st, serf.address),
 	  NULL },
 
 	{ ngx_string("ether_auth"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE12,
-	  set_opt_env_str,
+	  ngx_ether_set_opt_env_str,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, serf.auth),
+	  offsetof(ngx_ether_peer_st, serf.auth),
 	  NULL },
 
 	{ ngx_string("ether_serf_prefix"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, serf.prefix),
-	  &serf_prefix_check_post },
+	  offsetof(ngx_ether_peer_st, serf.prefix),
+	  &ngx_ether_serf_prefix_check_post },
 
 	{ ngx_string("ether_session_id_hex"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_flag_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, memc.hex),
+	  offsetof(ngx_ether_peer_st, memc.hex),
 	  NULL },
 
 	{ ngx_string("ether_session_id_prefix"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_str_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, memc.prefix),
-	  &memc_prefix_check_post },
+	  offsetof(ngx_ether_peer_st, memc.prefix),
+	  &ngx_ether_memc_prefix_check_post },
 
 	{ ngx_string("ether_memc_timeout"),
 	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
 	  ngx_conf_set_msec_slot,
 	  NGX_HTTP_SRV_CONF_OFFSET,
-	  offsetof(peer_st, memc.timeout),
+	  offsetof(ngx_ether_peer_st, memc.timeout),
 	  NULL },
 
 	ngx_null_command
 };
 
-static ngx_http_module_t module_ctx = {
-	NULL,            /* preconfiguration */
-	NULL,            /* postconfiguration */
+static ngx_http_module_t ngx_ether_module_ctx = {
+	NULL,                      /* preconfiguration */
+	NULL,                      /* postconfiguration */
 
-	NULL,            /* create main configuration */
-	NULL,            /* init main configuration */
+	NULL,                      /* create main configuration */
+	NULL,                      /* init main configuration */
 
-	create_srv_conf, /* create server configuration */
-	merge_srv_conf,  /* merge server configuration */
+	ngx_ether_create_srv_conf, /* create server configuration */
+	ngx_ether_merge_srv_conf,  /* merge server configuration */
 
-	NULL,            /* create location configuration */
-	NULL             /* merge location configuration */
+	NULL,                      /* create location configuration */
+	NULL                       /* merge location configuration */
 };
 
 ngx_module_t ngx_http_ether_module = {
 	NGX_MODULE_V1,
-	&module_ctx,     /* module context */
-	module_commands, /* module directives */
-	NGX_HTTP_MODULE, /* module type */
-	NULL,            /* init master */
-	NULL,            /* init module */
-	init_process,    /* init process */
-	NULL,            /* init thread */
-	NULL,            /* exit thread */
-	NULL,            /* exit process */
-	NULL,            /* exit master */
+	&ngx_ether_module_ctx,     /* module context */
+	ngx_ether_module_commands, /* module directives */
+	NGX_HTTP_MODULE,           /* module type */
+	NULL,                      /* init master */
+	NULL,                      /* init module */
+	ngx_ether_init_process,    /* init process */
+	NULL,                      /* init thread */
+	NULL,                      /* exit thread */
+	NULL,                      /* exit process */
+	NULL,                      /* exit master */
 	NGX_MODULE_V1_PADDING
 };
 
-static ngx_int_t init_process(ngx_cycle_t *cycle)
+static ngx_int_t ngx_ether_init_process(ngx_cycle_t *cycle)
 {
 	ngx_http_core_main_conf_t *cmcf;
 	ngx_http_core_srv_conf_t **cscfp;
-	peer_st *peer;
+	ngx_ether_peer_st *peer;
 	ngx_connection_t *c;
 	ngx_peer_connection_t *pc;
 	ngx_int_t rc;
@@ -431,8 +444,8 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 		wev->log = c->log;
 		c->pool = cycle->pool;
 
-		rev->handler = serf_read_handler;
-		wev->handler = serf_write_handler;
+		rev->handler = ngx_ether_serf_read_handler;
+		wev->handler = ngx_ether_serf_write_handler;
 
 		peer->serf.pc_connect = 0;
 
@@ -445,14 +458,14 @@ static ngx_int_t init_process(ngx_cycle_t *cycle)
 	return NGX_OK;
 }
 
-static void cleanup_peer(void *data)
+static void ngx_ether_cleanup_peer(void *data)
 {
-	peer_st *peer = data;
+	ngx_ether_peer_st *peer = data;
 	ngx_peer_connection_t *pc;
 	ngx_connection_t *c;
 	ngx_queue_t *q;
-	memc_server_st *server;
-	key_st *key;
+	ngx_ether_memc_server_st *server;
+	ngx_ether_key_st *key;
 
 	pc = &peer->serf.pc;
 
@@ -465,7 +478,7 @@ static void cleanup_peer(void *data)
 	for (q = ngx_queue_head(&peer->memc.servers);
 		q != ngx_queue_sentinel(&peer->memc.servers);
 		q = ngx_queue_next(q)) {
-		server = ngx_queue_data(q, memc_server_st, queue);
+		server = ngx_queue_data(q, ngx_ether_memc_server_st, queue);
 
 		ngx_close_connection(server->c);
 	}
@@ -473,17 +486,17 @@ static void cleanup_peer(void *data)
 	for (q = ngx_queue_head(&peer->ticket_keys);
 		q != ngx_queue_sentinel(&peer->ticket_keys);
 		q = ngx_queue_next(q)) {
-		key = ngx_queue_data(q, key_st, queue);
+		key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 		ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
 	}
 }
 
-static void *create_srv_conf(ngx_conf_t *cf)
+static void *ngx_ether_create_srv_conf(ngx_conf_t *cf)
 {
-	peer_st *escf;
+	ngx_ether_peer_st *escf;
 
-	escf = ngx_pcalloc(cf->pool, sizeof(peer_st));
+	escf = ngx_pcalloc(cf->pool, sizeof(ngx_ether_peer_st));
 	if (!escf) {
 		return NULL;
 	}
@@ -503,10 +516,10 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	return escf;
 }
 
-static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+static char *ngx_ether_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	const peer_st *prev = parent;
-	peer_st *peer = child;
+	const ngx_ether_peer_st *prev = parent;
+	ngx_ether_peer_st *peer = child;
 	ngx_http_ssl_srv_conf_t *ssl;
 	ngx_url_t u;
 	ngx_pool_cleanup_t *cln;
@@ -569,7 +582,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 		return NGX_CONF_ERROR;
 	}
 
-	cln->handler = cleanup_peer;
+	cln->handler = ngx_ether_cleanup_peer;
 	cln->data = peer;
 
 	ngx_queue_init(&peer->memc.servers);
@@ -593,7 +606,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	peer->serf.has_send = 1;
 
-	peer->serf.state = HANDSHAKING;
+	peer->serf.state = NGX_ETHER_HANDSHAKING;
 
 	do {
 		if (RAND_bytes(seq.byte, sizeof(uint64_t)) != 1) {
@@ -601,7 +614,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 			return NGX_CONF_ERROR;
 		}
 
-		seq.u64 &= ~(uint64_t)SERF_SEQ_STATE_MASK;
+		seq.u64 &= ~(uint64_t)NGX_ETHER_SERF_SEQ_STATE_MASK;
 	} while (!seq.u64);
 
 	peer->serf.seq = seq.u64;
@@ -668,7 +681,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	SSL_CTX_set_options(ssl->ssl.ctx, SSL_OP_NO_TICKET);
 
-	if (!SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, session_ticket_key_handler)) {
+	if (!SSL_CTX_set_tlsext_ticket_key_cb(ssl->ssl.ctx, ngx_ether_session_ticket_key_handler)) {
 		ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 			"nginx was built with Session Tickets support, however, "
 			"now it is linked dynamically to an OpenSSL library "
@@ -678,15 +691,15 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 	SSL_CTX_set_session_cache_mode(ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
-	SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, new_session_handler);
-	SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, get_cached_session_handler);
-	SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, remove_session_handler);
+	SSL_CTX_sess_set_new_cb(ssl->ssl.ctx, ngx_ether_new_session_handler);
+	SSL_CTX_sess_set_get_cb(ssl->ssl.ctx, ngx_ether_get_session_handler);
+	SSL_CTX_sess_set_remove_cb(ssl->ssl.ctx, ngx_ether_remove_session_handler);
 
-	if (ssl->session_timeout > REALTIME_MAXDELTA) {
+	if (ssl->session_timeout > NGX_ETHER_REALTIME_MAXDELTA) {
 		ngx_log_error(NGX_LOG_WARN, cf->log, 0,
 			"memcached does not support timeouts greater than %d seconds, " \
 			"session_timeout of %d seconds will be capped",
-			REALTIME_MAXDELTA, ssl->session_timeout);
+			NGX_ETHER_REALTIME_MAXDELTA, ssl->session_timeout);
 	}
 
 	peer->serf.pc_connect = 1;
@@ -694,7 +707,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	return NGX_CONF_OK;
 }
 
-static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+static char *ngx_ether_set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
 	char *p = conf;
 
@@ -732,22 +745,22 @@ static char *set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	return NGX_CONF_OK;
 }
 
-static char *memc_prefix_check(ngx_conf_t *cf, void *data, void *conf)
+static char *ngx_ether_memc_prefix_check(ngx_conf_t *cf, void *data, void *conf)
 {
 	ngx_str_t *str = conf;
 
-	if (str->len > MEMC_MAX_KEY_PREFIX_LEN) {
+	if (str->len > NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN) {
 		return "too long";
 	}
 
 	return NGX_CONF_OK;
 }
 
-static char *serf_prefix_check(ngx_conf_t *cf, void *data, void *conf)
+static char *ngx_ether_serf_prefix_check(ngx_conf_t *cf, void *data, void *conf)
 {
 	ngx_str_t *str = conf;
 
-	if (str->len > SERF_MAX_KEY_PREFIX_LEN) {
+	if (str->len > NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN) {
 		return "too long";
 	}
 
@@ -758,7 +771,7 @@ static char *serf_prefix_check(ngx_conf_t *cf, void *data, void *conf)
 	return NGX_CONF_OK;
 }
 
-static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
+static ngx_int_t ngx_ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssize_t size,
 		ngx_log_t *log)
 {
 	size_t off = 0;
@@ -805,7 +818,7 @@ static ngx_int_t ether_msgpack_parse(msgpack_unpacked *und, ngx_buf_t *recv, ssi
 	}
 }
 
-static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
+static const char *ngx_ether_msgpack_parse_map(const msgpack_object *obj, ...)
 {
 	va_list ap;
 	msgpack_object *out;
@@ -865,7 +878,7 @@ static const char *ether_msgpack_parse_map(const msgpack_object *obj, ...)
 	return NULL;
 }
 
-static int ether_msgpack_write(void *data, const char *buf, size_t len)
+static int ngx_ether_msgpack_write(void *data, const char *buf, size_t len)
 {
 	ngx_buf_t *nbuf = data;
 	ngx_pool_t *pool = nbuf->tag;
@@ -905,18 +918,18 @@ static int ether_msgpack_write(void *data, const char *buf, size_t len)
 	return 0;
 }
 
-static void serf_read_handler(ngx_event_t *rev)
+static void ngx_ether_serf_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
-	peer_st *peer;
+	ngx_ether_peer_st *peer;
 	ssize_t size, n;
 	msgpack_unpacked und;
 	void *hdr_start;
 	u_char *new_buf;
 	const char *err;
 	msgpack_object seq, error;
-	struct serf_cmd_st b;
-	const struct serf_cmd_st *cmd;
+	ngx_ether_serf_cmd_st b;
+	const ngx_ether_serf_cmd_st *cmd;
 
 	c = rev->data;
 	peer = c->data;
@@ -977,7 +990,7 @@ static void serf_read_handler(ngx_event_t *rev)
 
 	hdr_start = peer->serf.recv.pos;
 
-	switch (ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
+	switch (ngx_ether_msgpack_parse(&und, &peer->serf.recv, size, c->log)) {
 		case NGX_OK:
 			break;
 		case NGX_AGAIN:
@@ -992,7 +1005,7 @@ static void serf_read_handler(ngx_event_t *rev)
 	seq.type = MSGPACK_OBJECT_POSITIVE_INTEGER;
 	error.type = MSGPACK_OBJECT_STR;
 
-	err = ether_msgpack_parse_map(&und.data, "Seq", &seq, "Error", &error, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "Seq", &seq, "Error", &error, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		goto done;
@@ -1004,14 +1017,15 @@ static void serf_read_handler(ngx_event_t *rev)
 		goto done;
 	}
 
-	if (peer->serf.seq != (seq.via.u64 & ~(uint64_t)SERF_SEQ_STATE_MASK)) {
+	if (peer->serf.seq != (seq.via.u64 & ~(uint64_t)NGX_ETHER_SERF_SEQ_STATE_MASK)) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"unrecognised RPC seq number: %xd", seq.via.u64);
 		goto done;
 	}
 
-	b.state = seq.via.u64 & SERF_SEQ_STATE_MASK;
-	cmd = bsearch(&b, kSerfCMDs, kNumSerfCMDs, sizeof(struct serf_cmd_st), serf_cmd_state_cmp);
+	b.state = seq.via.u64 & NGX_ETHER_SERF_SEQ_STATE_MASK;
+	cmd = bsearch(&b, ngx_ether_serf_cmds, ngx_ether_num_serf_cmds,
+		sizeof(ngx_ether_serf_cmd_st), ngx_ether_serf_cmd_state_cmp);
 	if (!cmd) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"unrecognised RPC seq number: %xd", seq.via.u64);
@@ -1041,14 +1055,14 @@ cleanup:
 	msgpack_unpacked_destroy(&und);
 }
 
-static void serf_write_handler(ngx_event_t *wev)
+static void ngx_ether_serf_write_handler(ngx_event_t *wev)
 {
 	ngx_connection_t *c;
-	peer_st *peer;
+	ngx_ether_peer_st *peer;
 	ssize_t size;
 	msgpack_packer pk;
-	struct serf_cmd_st b;
-	const struct serf_cmd_st *cmd;
+	ngx_ether_serf_cmd_st b;
+	const ngx_ether_serf_cmd_st *cmd;
 
 	c = wev->data;
 	peer = c->data;
@@ -1059,15 +1073,15 @@ static void serf_write_handler(ngx_event_t *wev)
 
 	if (peer->serf.send.last == peer->serf.send.start) {
 		b.state = peer->serf.state;
-		cmd = bsearch(&b, kSerfCMDs, kNumSerfCMDs, sizeof(struct serf_cmd_st),
-			serf_cmd_state_cmp);
+		cmd = bsearch(&b, ngx_ether_serf_cmds, ngx_ether_num_serf_cmds,
+			sizeof(ngx_ether_serf_cmd_st), ngx_ether_serf_cmd_state_cmp);
 		if (!cmd) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
 				"write_handler called in invalid state");
 			return;
 		}
 
-		msgpack_packer_init(&pk, &peer->serf.send, ether_msgpack_write);
+		msgpack_packer_init(&pk, &peer->serf.send, ngx_ether_msgpack_write);
 
 		// header
 		// {"Command": "handshake", "Seq": 0}
@@ -1108,9 +1122,9 @@ static void serf_write_handler(ngx_event_t *wev)
 	}
 }
 
-static int serf_cmd_state_cmp(const void *in_a, const void *in_b)
+static int ngx_ether_serf_cmd_state_cmp(const void *in_a, const void *in_b)
 {
-	const struct serf_cmd_st *a = in_a, *b = in_b;
+	const ngx_ether_serf_cmd_st *a = in_a, *b = in_b;
 
 	if (a->state > b->state) {
 		return 1;
@@ -1121,7 +1135,7 @@ static int serf_cmd_state_cmp(const void *in_a, const void *in_b)
 	}
 }
 
-static void add_handshake_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_handshake_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
 	// {"Version": 1}
 
@@ -1132,7 +1146,7 @@ static void add_handshake_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_int32(pk, 1);
 }
 
-static void add_auth_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_auth_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
 	// {"AuthKey": "my-secret-auth-token"}
 
@@ -1144,43 +1158,45 @@ static void add_auth_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_str_body(pk, peer->serf.auth.data, peer->serf.auth.len);
 }
 
-static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_key_ev_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
-	u_char buf[5 * SERF_MAX_KEY_PREFIX_LEN
+	u_char buf[5 * NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN
 		+ 4 * (sizeof("user:" /*event name*/ ",") - 1)
 		+ sizeof("query:" /*query name*/) - 1
-		+ sizeof(INSTALL_KEY_EVENT REMOVE_KEY_EVENT SET_DEFAULT_KEY_EVENT
-			WIPE_KEYS_EVENT LIST_KEYS_QUERY) - 1
+		+ sizeof(NGX_ETHER_INSTALL_KEY_EVENT NGX_ETHER_REMOVE_KEY_EVENT
+			NGX_ETHER_SET_DEFAULT_KEY_EVENT NGX_ETHER_WIPE_KEYS_EVENT
+			NGX_ETHER_LIST_KEYS_QUERY) - 1
 		+ 1];
 	u_char *p = buf;
 
 	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, INSTALL_KEY_EVENT, sizeof(INSTALL_KEY_EVENT) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_INSTALL_KEY_EVENT, sizeof(NGX_ETHER_INSTALL_KEY_EVENT) - 1);
 
 	*p++ = ',';
 
 	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, REMOVE_KEY_EVENT, sizeof(REMOVE_KEY_EVENT) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_REMOVE_KEY_EVENT, sizeof(NGX_ETHER_REMOVE_KEY_EVENT) - 1);
 
 	*p++ = ',';
 
 	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, SET_DEFAULT_KEY_EVENT, sizeof(SET_DEFAULT_KEY_EVENT) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_SET_DEFAULT_KEY_EVENT,
+		sizeof(NGX_ETHER_SET_DEFAULT_KEY_EVENT) - 1);
 
 	*p++ = ',';
 
 	p = ngx_cpymem(p, "user:", sizeof("user:") - 1);
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, WIPE_KEYS_EVENT, sizeof(WIPE_KEYS_EVENT) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_WIPE_KEYS_EVENT, sizeof(NGX_ETHER_WIPE_KEYS_EVENT) - 1);
 
 	*p++ = ',';
 
 	p = ngx_cpymem(p, "query:", sizeof("query:") - 1);
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, LIST_KEYS_QUERY, sizeof(LIST_KEYS_QUERY) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_LIST_KEYS_QUERY, sizeof(NGX_ETHER_LIST_KEYS_QUERY) - 1);
 
 	*p = '\0';
 
@@ -1194,13 +1210,14 @@ static void add_key_ev_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_str_body(pk, buf, p - buf);
 }
 
-static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_key_query_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
-	u_char buf[SERF_MAX_KEY_PREFIX_LEN + sizeof(RETRIEVE_KEYS_QUERY) - 1 + 1];
+	u_char buf[NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN + sizeof(NGX_ETHER_RETRIEVE_KEYS_QUERY)];
 	u_char *p = buf;
 
 	p = ngx_cpymem(p, peer->serf.prefix.data, peer->serf.prefix.len);
-	p = ngx_cpymem(p, RETRIEVE_KEYS_QUERY, sizeof(RETRIEVE_KEYS_QUERY) - 1);
+	p = ngx_cpymem(p, NGX_ETHER_RETRIEVE_KEYS_QUERY,
+		sizeof(NGX_ETHER_RETRIEVE_KEYS_QUERY) - 1);
 
 	*p = '\0';
 
@@ -1241,7 +1258,7 @@ static void add_key_query_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_bin(pk, 0);
 }
 
-static void add_member_ev_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_member_ev_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
 	// {"Type": "member-join,user:deploy"}`
 
@@ -1249,11 +1266,12 @@ static void add_member_ev_req_body(msgpack_packer *pk, peer_st *peer)
 
 	msgpack_pack_str(pk, sizeof("Type") - 1);
 	msgpack_pack_str_body(pk, "Type", sizeof("Type") - 1);
-	msgpack_pack_str(pk, sizeof(STREAM_MEMBER_EVENTS) - 1);
-	msgpack_pack_str_body(pk, STREAM_MEMBER_EVENTS, sizeof(STREAM_MEMBER_EVENTS) - 1);
+	msgpack_pack_str(pk, sizeof(NGX_ETHER_STREAM_MEMBER_EVENTS) - 1);
+	msgpack_pack_str_body(pk, NGX_ETHER_STREAM_MEMBER_EVENTS,
+		sizeof(NGX_ETHER_STREAM_MEMBER_EVENTS) - 1);
 }
 
-static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_list_members_req_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
 	// {"Tags": {"key": "val"}, "Status": "alive", "Name": "node1"}
 
@@ -1264,9 +1282,9 @@ static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_map(pk, 1);
 	msgpack_pack_str(pk, peer->serf.tag_key.len);
 	msgpack_pack_str_body(pk, peer->serf.tag_key.data, peer->serf.tag_key.len);
-	msgpack_pack_str(pk, sizeof(SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
-	msgpack_pack_str_body(pk, SERF_ETHER_TAG_MEMC_OPT_REGEX,
-		sizeof(SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
+	msgpack_pack_str(pk, sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
+	msgpack_pack_str_body(pk, NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT_REGEX,
+		sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT_REGEX) - 1);
 
 	msgpack_pack_str(pk, sizeof("Status") - 1);
 	msgpack_pack_str_body(pk, "Status", sizeof("Status") - 1);
@@ -1274,11 +1292,11 @@ static void add_list_members_req_body(msgpack_packer *pk, peer_st *peer)
 	msgpack_pack_str_body(pk, "alive", sizeof("alive") - 1);
 }
 
-static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer)
+static void ngx_ether_add_respond_list_keys_body(msgpack_packer *pk, ngx_ether_peer_st *peer)
 {
 	msgpack_sbuffer sbuf;
 	msgpack_packer pk2;
-	key_st *key;
+	ngx_ether_key_st *key;
 	ngx_queue_t *q;
 	size_t num = 0;
 
@@ -1311,7 +1329,7 @@ static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer)
 	for (q = ngx_queue_head(&peer->ticket_keys);
 		q != ngx_queue_sentinel(&peer->ticket_keys);
 		q = ngx_queue_next(q)) {
-		key = ngx_queue_data(q, key_st, queue);
+		key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 		msgpack_pack_bin(&pk2, SSL_TICKET_KEY_NAME_LEN);
 		msgpack_pack_bin_body(&pk2, key->name, SSL_TICKET_KEY_NAME_LEN);
@@ -1332,46 +1350,49 @@ static void add_respond_list_keys_body(msgpack_packer *pk, peer_st *peer)
 
 	msgpack_sbuffer_destroy(&sbuf);
 
-	peer->serf.state = WAITING;
+	peer->serf.state = NGX_ETHER_WAITING;
 	peer->serf.listing_keys_id = 0;
 }
 
-static ngx_int_t handle_handshake_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_handshake_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
-	if (peer->serf.state != HANDSHAKING) {
+	if (peer->serf.state != NGX_ETHER_HANDSHAKING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC handshake response");
 		return NGX_ERROR;
 	}
 
 	if (peer->serf.auth.len) {
-		peer->serf.state = AUTHENTICATING;
+		peer->serf.state = NGX_ETHER_AUTHENTICATING;
 	} else {
-		peer->serf.state = STREAM_KEY_EVSUB;
+		peer->serf.state = NGX_ETHER_STREAM_KEY_EVSUB;
 	}
 
 	peer->serf.has_send = 1;
 	return NGX_OK;
 }
 
-static ngx_int_t handle_auth_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_auth_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
-	if (peer->serf.state != AUTHENTICATING) {
+	if (peer->serf.state != NGX_ETHER_AUTHENTICATING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC auth response");
 		return NGX_ERROR;
 	}
 
-	peer->serf.state = STREAM_KEY_EVSUB;
+	peer->serf.state = NGX_ETHER_STREAM_KEY_EVSUB;
 
 	peer->serf.has_send = 1;
 	return NGX_OK;
 }
 
-static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
 	ngx_int_t rc;
 	msgpack_unpacked und;
 	msgpack_object event, name, payload = {0}, id;
-	key_st *key;
+	ngx_ether_key_st *key;
 	ngx_queue_t *q, *prev_q;
 	const char *err;
 	size_t num;
@@ -1387,21 +1408,22 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	// 	"Coalesce": true,
 	// }
 
-	if (peer->serf.state == STREAM_KEY_EVSUB) {
-		peer->serf.state = RETRIEVE_KEYS;
+	if (peer->serf.state == NGX_ETHER_STREAM_KEY_EVSUB) {
+		peer->serf.state = NGX_ETHER_RETRIEVE_KEYS;
 
 		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
-	if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+	if (peer->serf.state == NGX_ETHER_HANDSHAKING
+		|| peer->serf.state == NGX_ETHER_AUTHENTICATING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
 		return NGX_ERROR;
 	}
 
 	msgpack_unpacked_init(&und);
 
-	rc = ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
+	rc = ngx_ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
 	if (rc != NGX_OK) {
 		return rc;
 	}
@@ -1409,7 +1431,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	event.type = MSGPACK_OBJECT_STR;
 	name.type = MSGPACK_OBJECT_STR;
 
-	err = ether_msgpack_parse_map(&und.data,
+	err = ngx_ether_msgpack_parse_map(&und.data,
 		"Event", &event, "Name", &name, "Payload", &payload,
 		"LTime", NULL, /* "Coalesce", NULL, */
 		NULL);
@@ -1424,16 +1446,17 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 	if (ngx_strncmp(event.via.str.ptr, "query", event.via.str.size) == 0) {
 		id.type = MSGPACK_OBJECT_POSITIVE_INTEGER;
 
-		err = ether_msgpack_parse_map(&und.data, "ID", &id, NULL);
+		err = ngx_ether_msgpack_parse_map(&und.data, "ID", &id, NULL);
 		if (err) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 			goto error;
 		}
 
-		if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, LIST_KEYS_QUERY,
+		if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len,
+				NGX_ETHER_LIST_KEYS_QUERY,
 				name.via.str.size - peer->serf.prefix.len) == 0) {
-			if (peer->serf.state == WAITING) {
-				peer->serf.state = RESPOND_LIST_KEYS_QUERY;
+			if (peer->serf.state == NGX_ETHER_WAITING) {
+				peer->serf.state = NGX_ETHER_RESPOND_LIST_KEYS_QUERY;
 				peer->serf.listing_keys_id = id.via.u64;
 				peer->serf.has_send = 1;
 				return NGX_OK;
@@ -1458,7 +1481,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		return NGX_ERROR;
 	}
 
-	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, WIPE_KEYS_EVENT,
+	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, NGX_ETHER_WIPE_KEYS_EVENT,
 			name.via.str.size - peer->serf.prefix.len) == 0) {
 		num = 0;
 
@@ -1480,7 +1503,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
+			key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 			prev_q = ngx_queue_prev(q);
 			ngx_queue_remove(q);
@@ -1498,7 +1521,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		goto error;
 	}
 
-	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, INSTALL_KEY_EVENT,
+	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, NGX_ETHER_INSTALL_KEY_EVENT,
 			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
@@ -1513,7 +1536,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
+			key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				ngx_log_error(NGX_LOG_ERR, c->log, 0, "%*s event: already have key",
@@ -1522,7 +1545,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(key_st));
+		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st));
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
@@ -1536,7 +1559,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		key->aead = EVP_aead_aes_128_gcm();
 
 		ngx_queue_insert_tail(&peer->ticket_keys, &key->queue);
-	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, REMOVE_KEY_EVENT,
+	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, NGX_ETHER_REMOVE_KEY_EVENT,
 			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
@@ -1551,7 +1574,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
+			key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) != 0) {
 				continue;
@@ -1575,7 +1598,8 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 			ngx_pfree(c->pool, key);
 			break;
 		}
-	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, SET_DEFAULT_KEY_EVENT,
+	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len,
+			NGX_ETHER_SET_DEFAULT_KEY_EVENT,
 			name.via.str.size - peer->serf.prefix.len) == 0) {
 		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
@@ -1601,7 +1625,7 @@ static ngx_int_t handle_key_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t 
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
+			key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 			if (ngx_memcmp(payload.via.bin.ptr, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
 				key->was_default = 0;
@@ -1658,12 +1682,13 @@ error:
 	return NGX_ERROR;
 }
 
-static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
 	ngx_int_t rc;
 	msgpack_unpacked und;
 	msgpack_object *ptr, payload = {0}, type, default_key, keys;
-	key_st *key;
+	ngx_ether_key_st *key;
 	ngx_queue_t *q;
 	const char *err;
 	ngx_buf_t dummy_recv;
@@ -1679,28 +1704,29 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	// 	"Payload": "1.02",
 	// }
 
-	if (peer->serf.state == RETRIEVE_KEYS) {
-		peer->serf.state = STREAM_MEMBER_EVSUB;
+	if (peer->serf.state == NGX_ETHER_RETRIEVE_KEYS) {
+		peer->serf.state = NGX_ETHER_STREAM_MEMBER_EVSUB;
 
 		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
-	if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+	if (peer->serf.state == NGX_ETHER_HANDSHAKING
+		|| peer->serf.state == NGX_ETHER_AUTHENTICATING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
 		return NGX_ERROR;
 	}
 
 	msgpack_unpacked_init(&und);
 
-	rc = ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
+	rc = ngx_ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
 	if (rc != NGX_OK) {
 		return rc;
 	}
 
 	type.type = MSGPACK_OBJECT_STR;
 
-	err = ether_msgpack_parse_map(&und.data, "Type", &type, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "Type", &type, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		return NGX_ERROR;
@@ -1718,7 +1744,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 
 	payload.type = MSGPACK_OBJECT_BIN;
 
-	err = ether_msgpack_parse_map(&und.data, "From", NULL, "Payload", &payload, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "From", NULL, "Payload", &payload, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		goto error;
@@ -1729,7 +1755,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	dummy_recv.last = (u_char *)payload.via.bin.ptr + payload.via.bin.size;
 	dummy_recv.end = (u_char *)payload.via.bin.ptr + payload.via.bin.size;
 
-	rc = ether_msgpack_parse(&und, &dummy_recv, 0, c->log);
+	rc = ngx_ether_msgpack_parse(&und, &dummy_recv, 0, c->log);
 	if (rc != NGX_OK) {
 		return rc;
 	}
@@ -1737,7 +1763,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 	default_key.type = MSGPACK_OBJECT_BIN;
 	keys.type = MSGPACK_OBJECT_ARRAY;
 
-	err = ether_msgpack_parse_map(&und.data, "Default", &default_key, "Keys", &keys, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "Default", &default_key, "Keys", &keys, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		goto error;
@@ -1780,18 +1806,19 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 		for (q = ngx_queue_head(&peer->ticket_keys);
 			q != ngx_queue_sentinel(&peer->ticket_keys);
 			q = ngx_queue_next(q)) {
-			key = ngx_queue_data(q, key_st, queue);
+			key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 			if (ngx_memcmp(ptr->via.bin.ptr, key->name,
 					SSL_TICKET_KEY_NAME_LEN) == 0) {
 				ngx_log_error(NGX_LOG_INFO, c->log, 0,
-					"%*s" RETRIEVE_KEYS_QUERY " query: already have key",
+					"%*s" NGX_ETHER_RETRIEVE_KEYS_QUERY " query: " \
+					"already have key",
 					peer->serf.prefix.len, peer->serf.prefix.data);
 				goto is_default_key;
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(key_st));
+		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st));
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
@@ -1830,7 +1857,7 @@ static ngx_int_t handle_key_query_resp(ngx_connection_t *c, peer_st *peer, ssize
 		SSL_CTX_set_session_cache_mode(peer->ssl->ssl.ctx, SSL_SESS_CACHE_OFF);
 
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
-			"%*s" RETRIEVE_KEYS_QUERY " query: "
+			"%*s" NGX_ETHER_RETRIEVE_KEYS_QUERY " query: "
 			"no valid default key given, session ticket and cache support disabled",
 			peer->serf.prefix.len, peer->serf.prefix.data);
 	}
@@ -1863,13 +1890,14 @@ error:
 	return NGX_ERROR;
 }
 
-static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_member_ev_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
 	ngx_int_t rc;
 	msgpack_unpacked und;
 	msgpack_object event, members;
 	const char *err;
-	enum handle_member_resp_body_et todo;
+	ngx_ether_handle_member_resp_body_et todo;
 
 	// {
 	// 	"Event": "member-join",
@@ -1893,21 +1921,22 @@ static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize
 	// 	]
 	// }
 
-	if (peer->serf.state == STREAM_MEMBER_EVSUB) {
-		peer->serf.state = LISTING_MEMBERS;
+	if (peer->serf.state == NGX_ETHER_STREAM_MEMBER_EVSUB) {
+		peer->serf.state = NGX_ETHER_LISTING_MEMBERS;
 
 		peer->serf.has_send = 1;
 		return NGX_OK;
 	}
 
-	if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+	if (peer->serf.state == NGX_ETHER_HANDSHAKING
+		|| peer->serf.state == NGX_ETHER_AUTHENTICATING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
 		return NGX_ERROR;
 	}
 
 	msgpack_unpacked_init(&und);
 
-	rc = ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
+	rc = ngx_ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
 	if (rc != NGX_OK) {
 		return rc;
 	}
@@ -1915,19 +1944,22 @@ static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize
 	event.type = MSGPACK_OBJECT_STR;
 	members.type = MSGPACK_OBJECT_ARRAY;
 
-	err = ether_msgpack_parse_map(&und.data, "Event", &event, "Members", &members, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "Event", &event, "Members", &members, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		return NGX_ERROR;
 	}
 
-	if (ngx_strncmp(event.via.str.ptr, MEMBER_JOIN_EVENT, event.via.str.size) == 0) {
-		todo = HANDLE_ADD_MEMBER;
-	} else if (ngx_strncmp(event.via.str.ptr, MEMBER_LEAVE_EVENT, event.via.str.size) == 0
-		|| ngx_strncmp(event.via.str.ptr, MEMBER_FAILED_EVENT, event.via.str.size) == 0) {
-		todo = HANDLE_REMOVE_MEMBER;
-	} else if (ngx_strncmp(event.via.str.ptr, MEMBER_UPDATE_EVENT, event.via.str.size) == 0) {
-		todo = HANDLE_UPDATE_MEMBER;
+	if (ngx_strncmp(event.via.str.ptr, NGX_ETHER_MEMBER_JOIN_EVENT, event.via.str.size) == 0) {
+		todo = NGX_ETHER_HANDLE_ADD_MEMBER;
+	} else if (ngx_strncmp(event.via.str.ptr, NGX_ETHER_MEMBER_LEAVE_EVENT,
+			event.via.str.size) == 0
+		|| ngx_strncmp(event.via.str.ptr, NGX_ETHER_MEMBER_FAILED_EVENT,
+			event.via.str.size) == 0) {
+		todo = NGX_ETHER_HANDLE_REMOVE_MEMBER;
+	} else if (ngx_strncmp(event.via.str.ptr, NGX_ETHER_MEMBER_UPDATE_EVENT,
+			event.via.str.size) == 0) {
+		todo = NGX_ETHER_HANDLE_UPDATE_MEMBER;
 	} else {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0,
 			"received unrecognised event from serf: %*s",
@@ -1935,10 +1967,11 @@ static ngx_int_t handle_member_ev_resp(ngx_connection_t *c, peer_st *peer, ssize
 		return NGX_ERROR;
 	}
 
-	return handle_member_resp_body(c, peer, &members, todo);
+	return ngx_ether_handle_member_resp_body(c, peer, &members, todo);
 }
 
-static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ssize_t size)
+static ngx_int_t ngx_ether_handle_list_members_resp(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		ssize_t size)
 {
 	ngx_int_t rc;
 	msgpack_unpacked und;
@@ -1965,35 +1998,36 @@ static ngx_int_t handle_list_members_resp(ngx_connection_t *c, peer_st *peer, ss
 	// 	...]
 	// }
 
-	if (peer->serf.state == LISTING_MEMBERS) {
-		peer->serf.state = WAITING;
+	if (peer->serf.state == NGX_ETHER_LISTING_MEMBERS) {
+		peer->serf.state = NGX_ETHER_WAITING;
 	}
 
-	if (peer->serf.state == HANDSHAKING || peer->serf.state == AUTHENTICATING) {
+	if (peer->serf.state == NGX_ETHER_HANDSHAKING
+		|| peer->serf.state == NGX_ETHER_AUTHENTICATING) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, "unexpected RPC stream response");
 		return NGX_ERROR;
 	}
 
 	msgpack_unpacked_init(&und);
 
-	rc = ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
+	rc = ngx_ether_msgpack_parse(&und, &peer->serf.recv, size, c->log);
 	if (rc != NGX_OK) {
 		return rc;
 	}
 
 	members.type = MSGPACK_OBJECT_ARRAY;
 
-	err = ether_msgpack_parse_map(&und.data, "Members", &members, NULL);
+	err = ngx_ether_msgpack_parse_map(&und.data, "Members", &members, NULL);
 	if (err) {
 		ngx_log_error(NGX_LOG_ERR, c->log, 0, err);
 		return NGX_ERROR;
 	}
 
-	return handle_member_resp_body(c, peer, &members, HANDLE_LIST_MEMBERS);
+	return ngx_ether_handle_member_resp_body(c, peer, &members, NGX_ETHER_HANDLE_LIST_MEMBERS);
 }
 
-static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
-		const msgpack_object *members, enum handle_member_resp_body_et todo)
+static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ether_peer_st *peer,
+		const msgpack_object *members, ngx_ether_handle_member_resp_body_et todo)
 {
 	msgpack_object name, addr, tags, status;
 	const msgpack_object_kv *ptr_kv;
@@ -2005,7 +2039,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		have_changed,
 		add_member, remove_member, update_member, insert_member,
 		was_udp, is_udp;
-	memc_server_st *server;
+	ngx_ether_memc_server_st *server;
 	void *s_addr;
 	uint32_t hash, base_hash;
 	union {
@@ -2022,7 +2056,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	ngx_socket_t s;
 	ngx_connection_t *sc = NULL;
 	ngx_peer_connection_t pc;
-	memc_op_st *op;
+	ngx_ether_memc_op_st *op;
 #if NGX_DEBUG
 	ngx_keyval_t kv = {ngx_null_string, ngx_null_string};
 #endif /* NGX_DEBUG */
@@ -2034,14 +2068,14 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	update_member = 0;
 
 	switch (todo) {
-		case HANDLE_LIST_MEMBERS:
-		case HANDLE_ADD_MEMBER:
+		case NGX_ETHER_HANDLE_LIST_MEMBERS:
+		case NGX_ETHER_HANDLE_ADD_MEMBER:
 			add_member = 1;
 			break;
-		case HANDLE_REMOVE_MEMBER:
+		case NGX_ETHER_HANDLE_REMOVE_MEMBER:
 			remove_member = 1;
 			break;
-		case HANDLE_UPDATE_MEMBER:
+		case NGX_ETHER_HANDLE_UPDATE_MEMBER:
 			update_member = 1;
 			break;
 	}
@@ -2052,7 +2086,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		tags.type = MSGPACK_OBJECT_MAP;
 		status.type = MSGPACK_OBJECT_STR;
 
-		err = ether_msgpack_parse_map(&members->via.array.ptr[i],
+		err = ngx_ether_msgpack_parse_map(&members->via.array.ptr[i],
 			"Name", &name,
 			"Addr", &addr,
 			"Port", NULL,
@@ -2113,12 +2147,14 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 						len = ether + str->size - p;
 					}
 
-					if (ngx_strncmp(p, SERF_ETHER_TAG_MEMC_OPT "=",
-							sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1) == 0) {
+					if (ngx_strncmp(p, NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT "=",
+							sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT "=")
+							- 1) == 0) {
 						if (!skip_member) {
 							ngx_log_error(NGX_LOG_ERR, c->log, 0,
 								"%*s contains duplicate tag \"" \
-								SERF_ETHER_TAG_MEMC_OPT "\"",
+								NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT \
+								"\"",
 								peer->serf.tag_key.len,
 								peer->serf.tag_key.data);
 
@@ -2128,8 +2164,10 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 						skip_member = 0;
 
-						p += sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1;
-						len -= sizeof(SERF_ETHER_TAG_MEMC_OPT "=") - 1;
+						p += sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT "=")
+							- 1;
+						len -= sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT "=")
+							- 1;
 
 						if (ngx_strncmp(p, "udp:", sizeof("udp:") - 1) == 0) {
 							is_udp = 1;
@@ -2150,9 +2188,9 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 						rc = ngx_atoi(p, len);
 						if (rc <= 0 || rc > 0xFFFF) {
 							ngx_log_error(NGX_LOG_ERR, c->log, 0,
-								"malformed RPC response, expect "
-								"%*s=" SERF_ETHER_TAG_MEMC_OPT "=.."
-								"to be a valid number",
+								"malformed RPC response, expect %*s="
+								NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT
+								"=.. to be a valid number",
 								peer->serf.tag_key.len,
 								peer->serf.tag_key.data);
 
@@ -2161,12 +2199,14 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 						}
 
 						port = (unsigned short)rc;
-					} else if (ngx_strncmp(p, SERF_ETHER_TAG_MEMC_OPT,
-							sizeof(SERF_ETHER_TAG_MEMC_OPT) - 1) == 0) {
+					} else if (ngx_strncmp(p, NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT,
+							sizeof(NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT)
+							- 1) == 0) {
 						if (!skip_member) {
 							ngx_log_error(NGX_LOG_ERR, c->log, 0,
 								"%*s contains duplicate tag \"" \
-								SERF_ETHER_TAG_MEMC_OPT "\"",
+								NGX_ETHER_SERF_ETHER_TAG_MEMC_OPT \
+								"\"",
 								peer->serf.tag_key.len,
 								peer->serf.tag_key.data);
 
@@ -2204,7 +2244,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		for (q = ngx_queue_head(&peer->memc.servers);
 			q != ngx_queue_sentinel(&peer->memc.servers);
 			q = ngx_queue_next(q)) {
-			server = ngx_queue_data(q, memc_server_st, queue);
+			server = ngx_queue_data(q, ngx_ether_memc_server_st, queue);
 
 			if (server->name.len != name.via.str.size
 				|| ngx_memcmp(name.via.str.ptr, server->name.data,
@@ -2215,8 +2255,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			if (add_member) {
 				ngx_log_error(NGX_LOG_INFO, c->log, 0,
 					"skipping add of existing memcached server in %s",
-					(todo == HANDLE_LIST_MEMBERS) ? "members-filtered"
-						: MEMBER_JOIN_EVENT " event");
+					(todo == NGX_ETHER_HANDLE_LIST_MEMBERS) ? "members-filtered"
+						: NGX_ETHER_MEMBER_JOIN_EVENT " event");
 
 				skip_member = 1;
 			} else if ((update_member && skip_member) || remove_member) {
@@ -2229,10 +2269,10 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 				for (q = ngx_queue_head(&server->recv_ops);
 					q != ngx_queue_sentinel(&server->recv_ops);
 					q = ngx_queue_next(q)) {
-					op = ngx_queue_data(q, memc_op_st, recv_queue);
+					op = ngx_queue_data(q, ngx_ether_memc_op_st, recv_queue);
 
 					prev_q = ngx_queue_prev(q);
-					memc_cleanup_operation(op);
+					ngx_ether_memc_cleanup_operation(op);
 					q = prev_q;
 				}
 
@@ -2256,7 +2296,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		have_changed = 1;
 
 		if (insert_member) {
-			server = ngx_pcalloc(c->pool, sizeof(memc_server_st));
+			server = ngx_pcalloc(c->pool, sizeof(ngx_ether_memc_server_st));
 		}
 
 		if (addr.via.bin.size == 16 && IN6_IS_ADDR_V4MAPPED(addr.via.bin.ptr)) {
@@ -2399,8 +2439,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			}
 		}
 
-		rev->handler = memc_read_handler;
-		wev->handler = memc_write_handler;
+		rev->handler = ngx_ether_memc_read_handler;
+		wev->handler = ngx_ether_memc_write_handler;
 
 		/* don't close the socket on error if we've gotten this far */
 		sc = NULL;
@@ -2447,7 +2487,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 			"ssl session cache have %d memcached servers", num);
 
 	peer->memc.npoints = 0;
-	peer->memc.points = ngx_palloc(c->pool, sizeof(chash_point_st) * CHASH_NPOINTS * num);
+	peer->memc.points = ngx_palloc(c->pool,
+		sizeof(ngx_ether_chash_point_st) * NGX_ETHER_CHASH_NPOINTS * num);
 	if (!peer->memc.points) {
 		goto error;
 	}
@@ -2455,17 +2496,17 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 	for (q = ngx_queue_head(&peer->memc.servers);
 		q != ngx_queue_sentinel(&peer->memc.servers);
 		q = ngx_queue_next(q)) {
-		server = ngx_queue_data(q, memc_server_st, queue);
+		server = ngx_queue_data(q, ngx_ether_memc_server_st, queue);
 
 #if NGX_DEBUG
-		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_VERSION, &kv, server);
+		op = ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_VERSION, &kv, server);
 
 		if (op) {
-			op->handler = log_memc_version_handler;
+			op->handler = ngx_ether_log_memc_version_handler;
 			op->log = c->log;
 		} else {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0,
-				"memc_start_operation(PROTOCOL_BINARY_CMD_VERSION) failed");
+				"ngx_ether_memc_start_operation(PROTOCOL_BINARY_CMD_VERSION) failed");
 		}
 #endif /* NGX_DEBUG */
 
@@ -2496,7 +2537,7 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 
 		prev_hash.value = 0;
 
-		for (j = 0; j < CHASH_NPOINTS; j++) {
+		for (j = 0; j < NGX_ETHER_CHASH_NPOINTS; j++) {
 			hash = base_hash;
 
 			ngx_crc32_update(&hash, prev_hash.byte, 4);
@@ -2517,7 +2558,8 @@ static ngx_int_t handle_member_resp_body(ngx_connection_t *c, peer_st *peer,
 		}
 	}
 
-	ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(chash_point_st), chash_cmp_points);
+	ngx_qsort(peer->memc.points, peer->memc.npoints, sizeof(ngx_ether_chash_point_st),
+		ngx_ether_chash_cmp_points);
 
 	for (i = 0, j = 1; j < peer->memc.npoints; j++) {
 		if (peer->memc.points[i].hash != peer->memc.points[j].hash) {
@@ -2569,12 +2611,12 @@ error:
 }
 
 #if NGX_DEBUG
-static void log_memc_version_handler(memc_op_st *op, void *data)
+static void ngx_ether_log_memc_version_handler(ngx_ether_memc_op_st *op, void *data)
 {
 	ngx_int_t rc;
 	ngx_str_t value;
 
-	rc = memc_complete_operation(op, &value, NULL);
+	rc = ngx_ether_memc_complete_operation(op, &value, NULL);
 
 	if (rc == NGX_AGAIN) {
 		return;
@@ -2588,11 +2630,11 @@ static void log_memc_version_handler(memc_op_st *op, void *data)
 	}
 
 	/* rc == NGX_OK || rc == NGX_ERROR */
-	memc_cleanup_operation(op);
+	ngx_ether_memc_cleanup_operation(op);
 }
 #endif /* NGX_DEBUG */
 
-static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
+static int ngx_ether_session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *name,
 		unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx, int enc)
 {
 	if (hctx != SSL_magic_tlsext_ticket_key_cb_aead_ptr()) {
@@ -2600,18 +2642,18 @@ static int session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn, unsigned char *n
 	}
 
 	if (enc) {
-		return session_ticket_key_enc(ssl_conn, name, iv, (EVP_AEAD_CTX *)ectx);
+		return ngx_ether_session_ticket_key_enc(ssl_conn, name, iv, (EVP_AEAD_CTX *)ectx);
 	} else {
-		return session_ticket_key_dec(ssl_conn, name, (EVP_AEAD_CTX *)ectx);
+		return ngx_ether_session_ticket_key_dec(ssl_conn, name, (EVP_AEAD_CTX *)ectx);
 	}
 }
 
-static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8_t *nonce,
-		EVP_AEAD_CTX *ctx) {
+static int ngx_ether_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name,
+		uint8_t *nonce, EVP_AEAD_CTX *ctx) {
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
-	const peer_st *peer;
-	key_st *key;
+	const ngx_ether_peer_st *peer;
+	ngx_ether_key_st *key;
 	union {
 		struct {
 			uint64_t seq;
@@ -2661,11 +2703,12 @@ static int session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, uint8_t *name, uint8
 	return 0;
 }
 
-static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name, EVP_AEAD_CTX *ctx) {
+static int ngx_ether_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
+		EVP_AEAD_CTX *ctx) {
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
-	const peer_st *peer;
-	const key_st *key;
+	const ngx_ether_peer_st *peer;
+	const ngx_ether_key_st *key;
 	ngx_queue_t *q;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
@@ -2682,7 +2725,7 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 	for (q = ngx_queue_head(&peer->ticket_keys);
 		q != ngx_queue_sentinel(&peer->ticket_keys);
 		q = ngx_queue_next(q)) {
-		key = ngx_queue_data(q, key_st, queue);
+		key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
 		if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) != 0) {
 			continue;
@@ -2712,9 +2755,9 @@ static int session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 	return 0;
 }
 
-static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
+static int ngx_libc_cdecl ngx_ether_chash_cmp_points(const void *one, const void *two)
 {
-	const chash_point_st *first = one, *second = two;
+	const ngx_ether_chash_point_st *first = one, *second = two;
 
 	if (first->hash < second->hash) {
 		return -1;
@@ -2725,7 +2768,8 @@ static int ngx_libc_cdecl chash_cmp_points(const void *one, const void *two)
 	}
 }
 
-static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *point, uint32_t hash)
+static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
+		const ngx_ether_chash_point_st *point, uint32_t hash)
 {
 	ngx_uint_t i, j, k;
 
@@ -2749,11 +2793,11 @@ static ngx_uint_t find_chash_point(ngx_uint_t npoints, const chash_point_st *poi
 	return i;
 }
 
-static void memc_read_handler(ngx_event_t *rev)
+static void ngx_ether_memc_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
-	memc_server_st *server;
-	memc_op_st *op;
+	ngx_ether_memc_server_st *server;
+	ngx_ether_memc_op_st *op, quiet_op = {0};
 	ngx_queue_t *q;
 	ngx_buf_t recv;
 	u_char *new_buf;
@@ -2764,7 +2808,6 @@ static void memc_read_handler(ngx_event_t *rev)
 		uint16_t u16;
 		uint8_t byte[2];
 	} id0;
-	memc_op_st quiet_op = {0};
 
 	c = rev->data;
 	server = c->data;
@@ -2887,14 +2930,15 @@ done_read:
 
 			quiet_op.recv = recv;
 
-			assert(memc_complete_operation(&quiet_op, NULL, NULL) == NGX_ERROR);
+			assert(ngx_ether_memc_complete_operation(&quiet_op, NULL, NULL)
+				== NGX_ERROR);
 			goto process_next;
 	}
 
 	for (q = ngx_queue_head(&server->recv_ops);
 		q != ngx_queue_sentinel(&server->recv_ops);
 		q = ngx_queue_next(q)) {
-		op = ngx_queue_data(q, memc_op_st, recv_queue);
+		op = ngx_queue_data(q, ngx_ether_memc_op_st, recv_queue);
 
 		if ((server->udp && op->id0 != id0.u16)
 			|| op->id1 != res_hdr->response.opaque) {
@@ -2967,11 +3011,11 @@ store_temp:
 	}
 }
 
-static void memc_write_handler(ngx_event_t *wev)
+static void ngx_ether_memc_write_handler(ngx_event_t *wev)
 {
 	ngx_connection_t *c;
-	memc_server_st *server;
-	memc_op_st *op;
+	ngx_ether_memc_server_st *server;
+	ngx_ether_memc_op_st *op;
 	ngx_queue_t *q;
 	ssize_t size;
 
@@ -2980,7 +3024,7 @@ static void memc_write_handler(ngx_event_t *wev)
 
 	while (!ngx_queue_empty(&server->send_ops)) {
 		q = ngx_queue_head(&server->send_ops);
-		op = ngx_queue_data(q, memc_op_st, send_queue);
+		op = ngx_queue_data(q, ngx_ether_memc_op_st, send_queue);
 
 		while (op->send.pos < op->send.last) {
 			size = c->send(c, op->send.pos, op->send.last - op->send.pos);
@@ -3007,7 +3051,7 @@ static void memc_write_handler(ngx_event_t *wev)
 		}
 
 		if (op->is_quiet) {
-			memc_cleanup_operation(op);
+			ngx_ether_memc_cleanup_operation(op);
 		} else {
 			ngx_pfree(c->pool, op->send.start);
 
@@ -3019,24 +3063,24 @@ static void memc_write_handler(ngx_event_t *wev)
 	}
 }
 
-static void memc_default_op_handler(memc_op_st *op, void *data)
+static void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data)
 {
-	if (memc_complete_operation(op, NULL, NULL) != NGX_AGAIN) {
-		memc_cleanup_operation(op);
+	if (ngx_ether_memc_complete_operation(op, NULL, NULL) != NGX_AGAIN) {
+		ngx_ether_memc_cleanup_operation(op);
 	}
 }
 
-static void memc_event_op_handler(memc_op_st *op, void *data)
+static void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data)
 {
 	ngx_event_t *ev = data;
 
 	ngx_post_event(ev, &ngx_posted_events);
 }
 
-static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_command cmd,
-		const ngx_keyval_t *kv, void *in_data)
+static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer_st *peer,
+		protocol_binary_command cmd, const ngx_keyval_t *kv, void *in_data)
 {
-	memc_op_st *op = NULL;
+	ngx_ether_memc_op_st *op = NULL;
 	unsigned char *data = NULL, *p;
 	size_t len, hdr_len, ext_len = 0, body_len;
 	uint64_t id;
@@ -3045,7 +3089,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		uint8_t byte[2];
 	} id0;
 	uint32_t id1;
-	memc_server_st *server;
+	ngx_ether_memc_server_st *server;
 	uint32_t hash;
 	int is_quiet = 0;
 	protocol_binary_request_header *req_hdr;
@@ -3072,7 +3116,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 			hash = ngx_crc32_short(kv->key.data, kv->key.len);
 		}
 
-		hash = find_chash_point(peer->memc.npoints, peer->memc.points, hash);
+		hash = ngx_ether_find_chash_point(peer->memc.npoints, peer->memc.points, hash);
 		server = peer->memc.points[hash % peer->memc.npoints].data;
 	}
 
@@ -3184,7 +3228,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 		p = ngx_cpymem(p, kv->value.data, kv->value.len);
 	}
 
-	op = ngx_pcalloc(peer->pool, sizeof(memc_op_st));
+	op = ngx_pcalloc(peer->pool, sizeof(ngx_ether_memc_op_st));
 	if (!op) {
 		goto error;
 	}
@@ -3194,7 +3238,7 @@ static memc_op_st *memc_start_operation(const peer_st *peer, protocol_binary_com
 
 	op->is_quiet = is_quiet;
 
-	op->handler = memc_default_op_handler;
+	op->handler = ngx_ether_memc_default_op_handler;
 
 	op->server = server;
 
@@ -3227,7 +3271,8 @@ error:
 	return NULL;
 }
 
-static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value, void *out_data)
+static ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op,
+		ngx_str_t *value, void *out_data)
 {
 	ngx_str_t data;
 	unsigned short key_len, status;
@@ -3310,9 +3355,9 @@ static ngx_int_t memc_complete_operation(const memc_op_st *op, ngx_str_t *value,
 	return NGX_ERROR;
 }
 
-static void memc_cleanup_operation(memc_op_st *op)
+static void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op)
 {
-	const peer_st *peer = op->server->peer;
+	const ngx_ether_peer_st *peer = op->server->peer;
 
 	if (ngx_queue_prev(&op->recv_queue)
 		&& ngx_queue_next(ngx_queue_prev(&op->recv_queue)) == &op->recv_queue) {
@@ -3335,11 +3380,11 @@ static void memc_cleanup_operation(memc_op_st *op)
 	ngx_pfree(peer->pool, op);
 }
 
-static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
+static int ngx_ether_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
 {
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
-	const peer_st *peer;
+	const ngx_ether_peer_st *peer;
 	ngx_keyval_t kv;
 	unsigned int len;
 	EVP_AEAD_CTX aead_ctx;
@@ -3347,7 +3392,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	u_char *session = NULL, *name, *nonce, *p;
 	size_t session_len, out_len;
 	protocol_binary_request_add req;
-	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
+	u_char buf[NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -3372,7 +3417,7 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 				+ EVP_AEAD_MAX_OVERHEAD)
 		&& CBB_add_space(&cbb, &name, SSL_TICKET_KEY_NAME_LEN)
 		&& CBB_reserve(&cbb, &nonce, EVP_AEAD_MAX_NONCE_LENGTH)
-		&& session_ticket_key_enc(ssl_conn, name, nonce, &aead_ctx) >= 0
+		&& ngx_ether_session_ticket_key_enc(ssl_conn, name, nonce, &aead_ctx) >= 0
 		&& CBB_did_write(&cbb, EVP_AEAD_nonce_length(aead_ctx.aead))
 		&& CBB_reserve(&cbb, &p, session_len + EVP_AEAD_max_overhead(aead_ctx.aead))
 		&& EVP_AEAD_CTX_seal(&aead_ctx,
@@ -3381,12 +3426,13 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 				session, session_len, kv.key.data, kv.key.len)
 		&& CBB_did_write(&cbb, out_len)
 		&& CBB_finish(&cbb, &kv.value.data, &kv.value.len)) {
-		process_session_key_id(peer, &kv.key, buf);
+		ngx_ether_process_session_key_id(peer, &kv.key, buf);
 
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
-		req.message.body.expiration = ngx_min(SSL_SESSION_get_timeout(sess), REALTIME_MAXDELTA);
+		req.message.body.expiration =
+			ngx_min(SSL_SESSION_get_timeout(sess), NGX_ETHER_REALTIME_MAXDELTA);
 
-		(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_ADDQ, &kv, &req);
+		(void) ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_ADDQ, &kv, &req);
 	}
 
 	OPENSSL_free(session);
@@ -3397,24 +3443,24 @@ static int new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess
 	return 0;
 }
 
-static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id, int len,
-		int *copy)
+static ngx_ssl_session_t *ngx_ether_get_session_handler(ngx_ssl_conn_t *ssl_conn, u_char *id,
+		int len, int *copy)
 {
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
-	memc_op_st *op;
-	const peer_st *peer;
+	ngx_ether_memc_op_st *op;
+	const ngx_ether_peer_st *peer;
 	ngx_keyval_t kv;
 	ngx_str_t value;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
-	get_session_cleanup_st *cln_data;
+	ngx_ether_get_session_cleanup_st *cln_data;
 	ngx_event_t *ev;
 	ngx_ssl_session_t *sess;
 	EVP_AEAD_CTX aead_ctx;
 	CBS cbs, name, nonce;
 	size_t plaintext_len;
-	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
+	u_char buf[NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	c = ngx_ssl_get_connection(ssl_conn);
 	ssl_ctx = c->ssl->session_ctx;
@@ -3429,27 +3475,27 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		kv.key.data = id;
 		kv.key.len = len;
 
-		process_session_key_id(peer, &kv.key, buf);
+		ngx_ether_process_session_key_id(peer, &kv.key, buf);
 
 		ngx_str_null(&kv.value);
 
-		op = memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &kv, NULL);
+		op = ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &kv, NULL);
 		if (!op) {
 			return NULL;
 		}
 
-		op->handler = memc_event_op_handler;
+		op->handler = ngx_ether_memc_event_op_handler;
 		op->handler_data = c->write;
 
 		op->log = c->log;
 
-		cln = ngx_pool_cleanup_add(c->pool, sizeof(get_session_cleanup_st));
+		cln = ngx_pool_cleanup_add(c->pool, sizeof(ngx_ether_get_session_cleanup_st));
 		if (!cln) {
-			memc_cleanup_operation(op);
+			ngx_ether_memc_cleanup_operation(op);
 			return NULL;
 		}
 
-		cln->handler = get_session_cleanup_handler;
+		cln->handler = ngx_ether_get_session_cleanup_handler;
 
 		cln_data = cln->data;
 		cln_data->op = op;
@@ -3462,7 +3508,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 			}
 			cln_data->ev = ev;
 
-			ev->handler = get_session_timeout_handler;
+			ev->handler = ngx_ether_get_session_timeout_handler;
 			ev->data = c->write;
 			ev->log = c->log;
 
@@ -3480,13 +3526,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 		return SSL_magic_pending_session_ptr();
 	}
 
-	rc = memc_complete_operation(op, &value, NULL);
+	rc = ngx_ether_memc_complete_operation(op, &value, NULL);
 
 	if (rc == NGX_AGAIN) {
 		ev = SSL_get_ex_data(ssl_conn, g_ssl_exdata_get_session_timeout_index);
 		if (ev && ev->timedout) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "memcached operation timedout");
-
 			return NULL;
 		}
 
@@ -3502,7 +3547,7 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	EVP_AEAD_CTX_zero(&aead_ctx);
 
 	if (!CBS_get_bytes(&cbs, &name, SSL_TICKET_KEY_NAME_LEN)
-		|| session_ticket_key_dec(ssl_conn, CBS_data(&name), &aead_ctx) <= 0
+		|| ngx_ether_session_ticket_key_dec(ssl_conn, CBS_data(&name), &aead_ctx) <= 0
 		|| !CBS_get_bytes(&cbs, &nonce, EVP_AEAD_nonce_length(aead_ctx.aead))
 		|| !EVP_AEAD_CTX_open(&aead_ctx,
 				(uint8_t *)CBS_data(&cbs), &plaintext_len, CBS_len(&cbs),
@@ -3529,12 +3574,12 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	return sess;
 }
 
-static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
+static void ngx_ether_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 {
-	const peer_st *peer;
+	const ngx_ether_peer_st *peer;
 	ngx_keyval_t kv;
 	unsigned int len;
-	u_char buf[MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
+	u_char buf[NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
 
 	peer = SSL_CTX_get_ex_data(ssl, g_ssl_ctx_exdata_peer_index);
 	if (!peer) {
@@ -3544,14 +3589,15 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 	kv.key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	kv.key.len = len;
 
-	process_session_key_id(peer, &kv.key, buf);
+	ngx_ether_process_session_key_id(peer, &kv.key, buf);
 
 	ngx_str_null(&kv.value);
 
-	(void) memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
+	(void) ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
 }
 
-static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf)
+static inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer, ngx_str_t *key,
+		u_char *buf)
 {
 	u_char *p;
 
@@ -3574,18 +3620,18 @@ static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u
 	}
 }
 
-static void get_session_cleanup_handler(void *data)
+static void ngx_ether_get_session_cleanup_handler(void *data)
 {
-	get_session_cleanup_st *cln = data;
+	ngx_ether_get_session_cleanup_st *cln = data;
 
-	memc_cleanup_operation(cln->op);
+	ngx_ether_memc_cleanup_operation(cln->op);
 
 	if (cln->ev && cln->ev->timer_set) {
 		ngx_del_timer(cln->ev);
 	}
 }
 
-static void get_session_timeout_handler(ngx_event_t *ev)
+static void ngx_ether_get_session_timeout_handler(ngx_event_t *ev)
 {
 	ngx_event_t *wev = ev->data;
 
