@@ -159,6 +159,7 @@ typedef struct _peer_st {
 		/* conf directives */
 		ngx_flag_t hex;
 		ngx_str_t prefix;
+		ngx_msec_t timeout;
 
 		ngx_queue_t servers;
 
@@ -195,6 +196,11 @@ enum handle_member_resp_body_et {
 	HANDLE_REMOVE_MEMBER,
 	HANDLE_UPDATE_MEMBER,
 };
+
+typedef struct {
+	memc_op_st *op;
+	ngx_event_t *ev;
+} get_session_cleanup_st;
 
 static ngx_int_t init_process(ngx_cycle_t *cycle);
 
@@ -269,8 +275,12 @@ static void remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
  * buf should be MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2 bytes */
 static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u_char *buf);
 
+static void get_session_cleanup_handler(void *data);
+static void get_session_timeout_handler(ngx_event_t *ev);
+
 static int g_ssl_ctx_exdata_peer_index = -1;
 static int g_ssl_exdata_memc_op_index = -1;
+static int g_ssl_exdata_get_session_timeout_index = -1;
 
 static const struct serf_cmd_st kSerfCMDs[] = {
 	{ HANDSHAKING,
@@ -342,6 +352,13 @@ static ngx_command_t module_commands[] = {
 	  NGX_HTTP_SRV_CONF_OFFSET,
 	  offsetof(peer_st, memc.prefix),
 	  &memc_prefix_check_post },
+
+	{ ngx_string("ether_memc_timeout"),
+	  NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+	  ngx_conf_set_msec_slot,
+	  NGX_HTTP_SRV_CONF_OFFSET,
+	  offsetof(peer_st, memc.timeout),
+	  NULL },
 
 	ngx_null_command
 };
@@ -481,6 +498,7 @@ static void *create_srv_conf(ngx_conf_t *cf)
 	 */
 
 	escf->memc.hex = NGX_CONF_UNSET;
+	escf->memc.timeout = NGX_CONF_UNSET_MSEC;
 
 	return escf;
 }
@@ -507,6 +525,7 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	ngx_conf_merge_value(peer->memc.hex, prev->memc.hex, 1);
 	ngx_conf_merge_str_value(peer->serf.prefix, prev->serf.prefix, "ether:");
 	ngx_conf_merge_str_value(peer->memc.prefix, prev->memc.prefix, "ether:ssl-session-cache:");
+	ngx_conf_merge_msec_value(peer->memc.timeout, prev->memc.timeout, 250);
 
 	if (!peer->serf.address.len || ngx_strcmp(peer->serf.address.data, "off") == 0) {
 		return NGX_CONF_OK;
@@ -629,6 +648,14 @@ static char *merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 	if (g_ssl_exdata_memc_op_index == -1) {
 		g_ssl_exdata_memc_op_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 		if (g_ssl_exdata_memc_op_index == -1) {
+			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_get_ex_new_index failed");
+			return NGX_CONF_ERROR;
+		}
+	}
+
+	if (g_ssl_exdata_get_session_timeout_index == -1) {
+		g_ssl_exdata_get_session_timeout_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+		if (g_ssl_exdata_get_session_timeout_index == -1) {
 			ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "SSL_get_ex_new_index failed");
 			return NGX_CONF_ERROR;
 		}
@@ -3381,6 +3408,8 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	ngx_str_t value;
 	ngx_int_t rc;
 	ngx_pool_cleanup_t *cln;
+	get_session_cleanup_st *cln_data;
+	ngx_event_t *ev;
 	ngx_ssl_session_t *sess;
 	EVP_AEAD_CTX aead_ctx;
 	CBS cbs, name, nonce;
@@ -3414,14 +3443,35 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 
 		op->log = c->log;
 
-		cln = ngx_pool_cleanup_add(c->pool, 0);
+		cln = ngx_pool_cleanup_add(c->pool, sizeof(get_session_cleanup_st));
 		if (!cln) {
 			memc_cleanup_operation(op);
 			return NULL;
 		}
 
-		cln->handler = (ngx_pool_cleanup_pt)memc_cleanup_operation;
-		cln->data = op;
+		cln->handler = get_session_cleanup_handler;
+
+		cln_data = cln->data;
+		cln_data->op = op;
+		cln_data->ev = NULL;
+
+		if (peer->memc.timeout > 0) {
+			ev = ngx_pcalloc(c->pool, sizeof(ngx_event_t));
+			if (!ev) {
+				return NULL;
+			}
+			cln_data->ev = ev;
+
+			ev->handler = get_session_timeout_handler;
+			ev->data = c->write;
+			ev->log = c->log;
+
+			if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_get_session_timeout_index, ev)) {
+				return NULL;
+			}
+
+			ngx_add_timer(ev, peer->memc.timeout);
+		}
 
 		if (!SSL_set_ex_data(ssl_conn, g_ssl_exdata_memc_op_index, op)) {
 			return NULL;
@@ -3433,6 +3483,13 @@ static ngx_ssl_session_t *get_cached_session_handler(ngx_ssl_conn_t *ssl_conn, u
 	rc = memc_complete_operation(op, &value, NULL);
 
 	if (rc == NGX_AGAIN) {
+		ev = SSL_get_ex_data(ssl_conn, g_ssl_exdata_get_session_timeout_index);
+		if (ev && ev->timedout) {
+			ngx_log_error(NGX_LOG_ERR, c->log, 0, "memcached operation timedout");
+
+			return NULL;
+		}
+
 		return SSL_magic_pending_session_ptr();
 	}
 
@@ -3515,4 +3572,22 @@ static inline void process_session_key_id(const peer_st *peer, ngx_str_t *key, u
 		key->data = buf;
 		key->len += peer->memc.prefix.len;
 	}
+}
+
+static void get_session_cleanup_handler(void *data)
+{
+	get_session_cleanup_st *cln = data;
+
+	memc_cleanup_operation(cln->op);
+
+	if (cln->ev && cln->ev->timer_set) {
+		ngx_del_timer(cln->ev);
+	}
+}
+
+static void get_session_timeout_handler(ngx_event_t *ev)
+{
+	ngx_event_t *wev = ev->data;
+
+	ngx_post_event(wev, &ngx_posted_events);
 }
