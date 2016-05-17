@@ -257,6 +257,8 @@ static int ngx_ether_msgpack_write(void *data, const char *buf, size_t len);
 static int ngx_libc_cdecl ngx_ether_chash_cmp_points(const void *one, const void *two);
 static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
 		const ngx_ether_chash_point_st *point, uint32_t hash);
+static ngx_ether_memc_server_st *ngx_ether_get_memc_server(const ngx_ether_peer_st *peer,
+		const ngx_str_t *key);
 
 static void ngx_ether_memc_read_handler(ngx_event_t *rev);
 static void ngx_ether_memc_write_handler(ngx_event_t *wev);
@@ -264,7 +266,7 @@ static void ngx_ether_memc_write_handler(ngx_event_t *wev);
 static void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data);
 static void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data);
 
-static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer_st *peer,
+static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_server_st *server,
 		protocol_binary_command cmd, const ngx_keyval_t *kv, void *data);
 static ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op,
 		ngx_str_t *value, void *data);
@@ -2499,7 +2501,7 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 		server = ngx_queue_data(q, ngx_ether_memc_server_st, queue);
 
 #if NGX_DEBUG
-		op = ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_VERSION, &kv, server);
+		op = ngx_ether_memc_start_operation(server, PROTOCOL_BINARY_CMD_VERSION, &kv, NULL);
 
 		if (op) {
 			op->handler = ngx_ether_log_memc_version_handler;
@@ -2793,6 +2795,26 @@ static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
 	return i;
 }
 
+static ngx_ether_memc_server_st *ngx_ether_get_memc_server(const ngx_ether_peer_st *peer,
+		const ngx_str_t *key)
+{
+	uint32_t hash;
+
+	if (!peer->memc.npoints) {
+		return NULL;
+	}
+
+	/* see comment in ngx_crc32.c */
+	if (key->len > 64) {
+		hash = ngx_crc32_long(key->data, key->len);
+	} else {
+		hash = ngx_crc32_short(key->data, key->len);
+	}
+
+	hash = ngx_ether_find_chash_point(peer->memc.npoints, peer->memc.points, hash);
+	return peer->memc.points[hash % peer->memc.npoints].data;
+}
+
 static void ngx_ether_memc_read_handler(ngx_event_t *rev)
 {
 	ngx_connection_t *c;
@@ -3077,7 +3099,7 @@ static void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data
 	ngx_post_event(ev, &ngx_posted_events);
 }
 
-static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer_st *peer,
+static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_server_st *server,
 		protocol_binary_command cmd, const ngx_keyval_t *kv, void *in_data)
 {
 	ngx_ether_memc_op_st *op = NULL;
@@ -3089,8 +3111,6 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 		uint8_t byte[2];
 	} id0;
 	uint32_t id1;
-	ngx_ether_memc_server_st *server;
-	uint32_t hash;
 	int is_quiet = 0;
 	protocol_binary_request_header *req_hdr;
 	protocol_binary_request_set *reqs;
@@ -3099,26 +3119,6 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 #if NGX_DEBUG
 	const char *cmd_str;
 #endif /* NGX_DEBUG */
-
-	if (cmd == PROTOCOL_BINARY_CMD_VERSION) {
-		server = in_data;
-
-		in_req = NULL;
-	} else {
-		if (!peer->memc.npoints) {
-			return NULL;
-		}
-
-		/* see comment in ngx_crc32.c */
-		if (kv->key.len > 64) {
-			hash = ngx_crc32_long(kv->key.data, kv->key.len);
-		} else {
-			hash = ngx_crc32_short(kv->key.data, kv->key.len);
-		}
-
-		hash = ngx_ether_find_chash_point(peer->memc.npoints, peer->memc.points, hash);
-		server = peer->memc.points[hash % peer->memc.npoints].data;
-	}
 
 	switch (cmd) {
 		case PROTOCOL_BINARY_CMD_GET:
@@ -3151,7 +3151,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 			goto error;
 	}
 
-	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, peer->log, 0,
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, server->peer->log, 0,
 		"memcached operation: %s \"%*s\"", cmd_str, kv->key.len, kv->key.data);
 
 	hdr_len = sizeof(protocol_binary_request_header);
@@ -3163,7 +3163,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 	body_len = ext_len + kv->key.len + kv->value.len;
 	len = hdr_len + body_len;
 
-	data = ngx_palloc(peer->pool, len);
+	data = ngx_palloc(server->peer->pool, len);
 	if (!data) {
 		goto error;
 	}
@@ -3228,7 +3228,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 		p = ngx_cpymem(p, kv->value.data, kv->value.len);
 	}
 
-	op = ngx_pcalloc(peer->pool, sizeof(ngx_ether_memc_op_st));
+	op = ngx_pcalloc(server->peer->pool, sizeof(ngx_ether_memc_op_st));
 	if (!op) {
 		goto error;
 	}
@@ -3261,11 +3261,11 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(const ngx_ether_peer
 
 error:
 	if (data) {
-		ngx_pfree(peer->pool, data);
+		ngx_pfree(server->peer->pool, data);
 	}
 
 	if (op) {
-		ngx_pfree(peer->pool, op);
+		ngx_pfree(server->peer->pool, op);
 	}
 
 	return NULL;
@@ -3385,6 +3385,7 @@ static int ngx_ether_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_sessi
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
 	const ngx_ether_peer_st *peer;
+	ngx_ether_memc_server_st *server;
 	ngx_keyval_t kv;
 	unsigned int len;
 	EVP_AEAD_CTX aead_ctx;
@@ -3426,13 +3427,15 @@ static int ngx_ether_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_sessi
 				session, session_len, kv.key.data, kv.key.len)
 		&& CBB_did_write(&cbb, out_len)
 		&& CBB_finish(&cbb, &kv.value.data, &kv.value.len)) {
-		ngx_ether_process_session_key_id(peer, &kv.key, buf);
-
 		ngx_memzero(&req, sizeof(protocol_binary_request_set));
 		req.message.body.expiration =
 			ngx_min(SSL_SESSION_get_timeout(sess), NGX_ETHER_REALTIME_MAXDELTA);
 
-		(void) ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_ADDQ, &kv, &req);
+		ngx_ether_process_session_key_id(peer, &kv.key, buf);
+		server = ngx_ether_get_memc_server(peer, &kv.key);
+		if (server) {
+			(void) ngx_ether_memc_start_operation(server, PROTOCOL_BINARY_CMD_ADDQ, &kv, &req);
+		}
 	}
 
 	OPENSSL_free(session);
@@ -3450,6 +3453,7 @@ static ngx_ssl_session_t *ngx_ether_get_session_handler(ngx_ssl_conn_t *ssl_conn
 	const ngx_connection_t *c;
 	ngx_ether_memc_op_st *op;
 	const ngx_ether_peer_st *peer;
+	ngx_ether_memc_server_st *server;
 	ngx_keyval_t kv;
 	ngx_str_t value;
 	ngx_int_t rc;
@@ -3476,10 +3480,14 @@ static ngx_ssl_session_t *ngx_ether_get_session_handler(ngx_ssl_conn_t *ssl_conn
 		kv.key.len = len;
 
 		ngx_ether_process_session_key_id(peer, &kv.key, buf);
+		server = ngx_ether_get_memc_server(peer, &kv.key);
+		if (!server) {
+			return NULL;
+		}
 
 		ngx_str_null(&kv.value);
 
-		op = ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_GET, &kv, NULL);
+		op = ngx_ether_memc_start_operation(server, PROTOCOL_BINARY_CMD_GET, &kv, NULL);
 		if (!op) {
 			return NULL;
 		}
@@ -3577,6 +3585,7 @@ static ngx_ssl_session_t *ngx_ether_get_session_handler(ngx_ssl_conn_t *ssl_conn
 static void ngx_ether_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 {
 	const ngx_ether_peer_st *peer;
+	ngx_ether_memc_server_st *server;
 	ngx_keyval_t kv;
 	unsigned int len;
 	u_char buf[NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2];
@@ -3590,10 +3599,14 @@ static void ngx_ether_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *se
 	kv.key.len = len;
 
 	ngx_ether_process_session_key_id(peer, &kv.key, buf);
+	server = ngx_ether_get_memc_server(peer, &kv.key);
+	if (!server) {
+		return;
+	}
 
 	ngx_str_null(&kv.value);
 
-	(void) ngx_ether_memc_start_operation(peer, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
+	(void) ngx_ether_memc_start_operation(server, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
 }
 
 static inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer, ngx_str_t *key,
