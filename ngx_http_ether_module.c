@@ -95,7 +95,8 @@ typedef struct {
 
 	int udp;
 
-	const ngx_ether_peer_st *peer;
+	ngx_pool_t *pool;
+	ngx_log_t *log;
 
 	ngx_connection_t *c;
 
@@ -2464,7 +2465,8 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 
 		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 
-		server->peer = peer;
+		server->pool = c->pool;
+		server->log = c->log;
 
 		ngx_queue_insert_tail(&peer->memc.servers, &server->queue);
 	}
@@ -3151,7 +3153,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_serve
 			goto error;
 	}
 
-	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, server->peer->log, 0,
+	ngx_log_debug3(NGX_LOG_DEBUG_EVENT, server->log, 0,
 		"memcached operation: %s \"%*s\"", cmd_str, kv->key.len, kv->key.data);
 
 	hdr_len = sizeof(protocol_binary_request_header);
@@ -3163,7 +3165,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_serve
 	body_len = ext_len + kv->key.len + kv->value.len;
 	len = hdr_len + body_len;
 
-	data = ngx_palloc(server->peer->pool, len);
+	data = ngx_palloc(server->pool, len);
 	if (!data) {
 		goto error;
 	}
@@ -3228,7 +3230,7 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_serve
 		p = ngx_cpymem(p, kv->value.data, kv->value.len);
 	}
 
-	op = ngx_pcalloc(server->peer->pool, sizeof(ngx_ether_memc_op_st));
+	op = ngx_pcalloc(server->pool, sizeof(ngx_ether_memc_op_st));
 	if (!op) {
 		goto error;
 	}
@@ -3261,11 +3263,11 @@ static ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_serve
 
 error:
 	if (data) {
-		ngx_pfree(server->peer->pool, data);
+		ngx_pfree(server->pool, data);
 	}
 
 	if (op) {
-		ngx_pfree(server->peer->pool, op);
+		ngx_pfree(server->pool, op);
 	}
 
 	return NULL;
@@ -3357,8 +3359,6 @@ static ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *o
 
 static void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op)
 {
-	const ngx_ether_peer_st *peer = op->server->peer;
-
 	if (ngx_queue_prev(&op->recv_queue)
 		&& ngx_queue_next(ngx_queue_prev(&op->recv_queue)) == &op->recv_queue) {
 		ngx_queue_remove(&op->recv_queue);
@@ -3370,14 +3370,14 @@ static void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op)
 	}
 
 	if (op->send.start) {
-		ngx_pfree(peer->pool, op->send.start);
+		ngx_pfree(op->server->pool, op->send.start);
 	}
 
 	if (op->recv.start) {
-		ngx_pfree(peer->pool, op->recv.start);
+		ngx_pfree(op->server->pool, op->recv.start);
 	}
 
-	ngx_pfree(peer->pool, op);
+	ngx_pfree(op->server->pool, op);
 }
 
 static int ngx_ether_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
