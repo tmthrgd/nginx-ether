@@ -35,6 +35,8 @@
 #ifndef PROTOCOL_BINARY_H
 #define PROTOCOL_BINARY_H
 
+#pragma pack(push, 1)
+
 /**
  * This file contains definitions of the constants and packet formats
  * defined in the binary specification. Please note that you _MUST_ remember
@@ -467,4 +469,7 @@ extern "C"
 #ifdef __cplusplus
 }
 #endif
+
+#pragma pack(pop)
+
 #endif /* PROTOCOL_BINARY_H */
