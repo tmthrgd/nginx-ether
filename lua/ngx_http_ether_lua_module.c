@@ -470,9 +470,7 @@ static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r)
 		}
 
 		nret = 2;
-	} else if (rc == NGX_AGAIN) {
-		assert(op_data->ev.timedout);
-
+	} else if (op_data->ev.timedout) {
 		lua_pushnil(L);
 		lua_pushnil(L);
 		lua_pushliteral(L, "timed out");
