@@ -210,21 +210,21 @@ static int ngx_http_ether_lua_new(lua_State *L)
 		if (!lua_isnoneornil(L, -1)) {
 			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.address);
 		}
-		lua_remove(L, -1);
+		lua_pop(L, 1);
 
 		lua_getfield(L, -1, "auth");
 		if (!lua_isnoneornil(L, -1)) {
 			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.auth);
 		}
-		lua_remove(L, -1);
+		lua_pop(L, 1);
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
 			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.prefix);
 		}
-		lua_remove(L, -1);
+		lua_pop(L, 1);
 	}
-	lua_remove(L, -1);
+	lua_pop(L, 1);
 
 	lua_getfield(L, 1, "memc");
 	if (!lua_isnoneornil(L, -1)) {
@@ -235,15 +235,15 @@ static int ngx_http_ether_lua_new(lua_State *L)
 			luaL_checktype(L, -1, LUA_TBOOLEAN);
 			peer->memc.hex = lua_toboolean(L, -1);
 		}
-		lua_remove(L, -1);
+		lua_pop(L, 1);
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
 			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->memc.prefix);
 		}
-		lua_remove(L, -1);
+		lua_pop(L, 1);
 	}
-	lua_remove(L, -1);
+	lua_pop(L, 1);
 
 create_peer:
 	if (ngx_ether_create_peer(peer) != NGX_OK) {
@@ -686,13 +686,13 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 				if (!lua_isnoneornil(L, -1)) {
 					req.incr.message.body.initial = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 
 				lua_getfield(L, req_idx, "expiration");
 				if (!lua_isnoneornil(L, -1)) {
 					req.incr.message.body.expiration = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 				break;
 			case PROTOCOL_BINARY_CMD_SET:
 			case PROTOCOL_BINARY_CMD_ADD:
@@ -704,13 +704,13 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 				if (!lua_isnoneornil(L, -1)) {
 					req.set.message.body.flags = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 
 				lua_getfield(L, req_idx, "expiration");
 				if (!lua_isnoneornil(L, -1)) {
 					req.set.message.body.expiration = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 				break;
 			case PROTOCOL_BINARY_CMD_FLUSH:
 			case PROTOCOL_BINARY_CMD_FLUSHQ:
@@ -718,14 +718,14 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 				if (!lua_isnoneornil(L, -1)) {
 					req.flush.message.body.expiration = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 				break;
 			case PROTOCOL_BINARY_CMD_TOUCH:
 				lua_getfield(L, req_idx, "expiration");
 				if (!lua_isnoneornil(L, -1)) {
 					req.touch.message.body.expiration = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 				break;
 			case PROTOCOL_BINARY_CMD_GAT:
 			case PROTOCOL_BINARY_CMD_GATK:
@@ -735,7 +735,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 				if (!lua_isnoneornil(L, -1)) {
 					req.gat.message.body.expiration = luaL_checknumber(L, -1);
 				}
-				lua_remove(L, -1);
+				lua_pop(L, 1);
 				break;
 			default:
 				break;
