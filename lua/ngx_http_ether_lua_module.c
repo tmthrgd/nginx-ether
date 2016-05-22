@@ -835,10 +835,7 @@ static int ngx_http_ether_lua_destroy(lua_State *L)
 
 	ud = luaL_checkudata(L, 1, "_M");
 
-	if (ud->peer.pool) {
-		ngx_ether_cleanup_peer(&ud->peer);
-		ud->peer.pool = NULL;
-	}
+	ngx_ether_cleanup_peer(&ud->peer);
 
 	return 0;
 }
