@@ -249,6 +249,7 @@ create_peer:
 	if (ngx_ether_create_peer(peer) != NGX_OK) {
 		peer->pool = NULL;
 
+		lua_pop(L, 1);
 		lua_pushnil(L);
 		lua_pushliteral(L, "failed to create peer struct");
 		return 2;
@@ -258,6 +259,7 @@ create_peer:
 		if (ngx_ether_connect_peer(peer) != NGX_OK) {
 			ngx_ether_cleanup_peer(peer);
 
+			lua_pop(L, 1);
 			lua_pushnil(L);
 			lua_pushliteral(L, "failed to connect to peer");
 			return 2;
