@@ -779,7 +779,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 
 		lua_pushnil(L);
 		lua_pushnil(L);
-		lua_pushliteral(L, "no memcached servers");
+		lua_pushliteral(L, "no servers");
 		return 3;
 	}
 
