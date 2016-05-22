@@ -4,13 +4,20 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-#include <ngx_ether.h>
-
 #include <msgpack.h>
 
 #include "protocol_binary.h"
 
 #include <openssl/aes.h>
+
+#define NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN 64
+#define NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN 64
+
+#define NGX_ETHER_REALTIME_MAXDELTA 60*60*24*30
+
+typedef struct ngx_ether_peer_st ngx_ether_peer_st;
+typedef struct ngx_ether_memc_server_st ngx_ether_memc_server_st;
+typedef struct ngx_ether_memc_op_st ngx_ether_memc_op_st;
 
 typedef enum {
 	NGX_ETHER_WAITING = 0,
@@ -57,6 +64,8 @@ typedef struct ngx_ether_memc_server_st {
 	ngx_queue_t queue;
 } ngx_ether_memc_server_st;
 
+typedef void (*ngx_ether_memc_op_handler)(ngx_ether_memc_op_st *op, void *data);
+
 typedef struct ngx_ether_memc_op_st {
 	uint16_t id0;
 	uint32_t id1;
@@ -76,6 +85,19 @@ typedef struct ngx_ether_memc_op_st {
 	ngx_queue_t recv_queue;
 	ngx_queue_t send_queue;
 } ngx_ether_memc_op_st;
+
+typedef struct {
+	u_char name[SSL_TICKET_KEY_NAME_LEN];
+
+	u_char key[EVP_AEAD_MAX_KEY_LENGTH];
+	size_t key_len;
+
+	const EVP_AEAD *aead;
+
+	int was_default;
+
+	ngx_queue_t queue;
+} ngx_ether_key_st;
 
 typedef struct ngx_ether_peer_st {
 	struct {
@@ -137,6 +159,71 @@ typedef enum {
 	NGX_ETHER_HANDLE_REMOVE_MEMBER,
 	NGX_ETHER_HANDLE_UPDATE_MEMBER,
 } ngx_ether_handle_member_resp_body_et;
+
+ngx_int_t ngx_ether_create_peer(ngx_ether_peer_st *peer);
+ngx_int_t ngx_ether_connect_peer(ngx_ether_peer_st *peer);
+void ngx_ether_cleanup_peer(ngx_ether_peer_st *peer);
+
+char *ngx_ether_memc_prefix_check(ngx_conf_t *cf, void *data, void *conf);
+char *ngx_ether_serf_prefix_check(ngx_conf_t *cf, void *data, void *conf);
+
+static ngx_inline const ngx_ether_key_st *ngx_ether_get_key(const ngx_ether_peer_st *peer,
+		const u_char name[SSL_TICKET_KEY_NAME_LEN])
+{
+	const ngx_queue_t *q;
+	const ngx_ether_key_st *key;
+
+	for (q = ngx_queue_head(&peer->keys);
+		q != ngx_queue_sentinel(&peer->keys);
+		q = ngx_queue_next(q)) {
+		key = ngx_queue_data(q, ngx_ether_key_st, queue);
+
+		if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
+			return key;
+		}
+	}
+
+	return NULL;
+}
+
+ngx_ether_memc_server_st *ngx_ether_get_memc_server(const ngx_ether_peer_st *peer,
+		const ngx_str_t *key);
+
+void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data);
+void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data);
+
+ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_server_st *server,
+		protocol_binary_command cmd, const ngx_keyval_t *kv, void *data);
+ngx_int_t ngx_ether_memc_peak_operation(const ngx_ether_memc_op_st *op);
+ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op, ngx_str_t *value,
+		void *data);
+void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op);
+
+/* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes
+ * buf should be MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2 bytes */
+static ngx_inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer,
+		ngx_str_t *key, u_char *buf)
+{
+	u_char *p;
+
+	if (peer->memc.hex) {
+		p = buf + peer->memc.prefix.len;
+
+		key->len = ngx_hex_dump(p, key->data, key->len) - p;
+		key->data = p;
+	}
+
+	if (peer->memc.prefix.len) {
+		p = ngx_cpymem(buf, peer->memc.prefix.data, peer->memc.prefix.len);
+
+		if (!peer->memc.hex) {
+			p = ngx_cpymem(p, key->data, key->len);
+		}
+
+		key->data = buf;
+		key->len += peer->memc.prefix.len;
+	}
+}
 
 #define NGX_ETHER_FOREACH_MEMC_OP(MACRO) \
 	MACRO(GET, get) \

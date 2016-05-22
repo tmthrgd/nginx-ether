@@ -1,0 +1,287 @@
+diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
+--- a/include/openssl/ssl.h	2016-05-04 23:02:25.000000000 +0930
++++ b/include/openssl/ssl.h	2016-05-05 13:16:31.435515124 +0930
+@@ -1785,7 +1785,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+  * In both modes, |ctx| and |hmac_ctx| will already have been initialized with
+  * |EVP_CIPHER_CTX_init| and |HMAC_CTX_init|, respectively. |callback|
+  * configures |hmac_ctx| with an HMAC digest and key, and configures |ctx|
+- * for encryption or decryption, based on the mode.
++ * for encryption or decryption, based on the mode. If |callback| returns
++ * TLSEXT_TICKET_CB_WANT_AEAD then |callback| will be called a second time
++ * with |ctx| set to a |EVP_AEAD_CTX|* on which |EVP_AEAD_CTX_zero| has been
++ * called, and |hmac_ctx| will be set to |SSL_magic_tlsext_ticket_key_cb_aead_ptr|.
+  *
+  * When encrypting a new ticket, |encrypt| will be one. It writes a public
+  * 16-byte key name to |key_name| and a fresh IV to |iv|. The output IV length
+@@ -1806,6 +1809,17 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+                                   EVP_CIPHER_CTX *ctx, HMAC_CTX *hmac_ctx,
+                                   int encrypt));
+ 
++/* SSL_magic_tlsext_ticket_key_cb_aead_ptr returns a magic |HMAC_CTX|* which
++ * indicates that the |ctx| variable passed into |callback| is not
++ * a |EVP_CIPHER_CTX|* but is instead a |EVP_AEAD_CTX|*. */
++OPENSSL_EXPORT HMAC_CTX *SSL_magic_tlsext_ticket_key_cb_aead_ptr(void);
++
++/* The return value of the ticket callback that requests AEAD operation.
++ *
++ * See |SSL_CTX_set_tlsext_ticket_key_cb|
++ * and |SSL_magic_tlsext_ticket_key_cb_aead_ptr|. */
++#define TLSEXT_TICKET_CB_WANT_AEAD -0xAEAD
++
+ 
+ /* Elliptic curve Diffie-Hellman.
+  *
+diff -rupN a/ssl/s3_lib.c b/ssl/s3_lib.c
+--- a/ssl/s3_lib.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/s3_lib.c	2016-05-05 13:16:31.435515124 +0930
+@@ -162,6 +162,11 @@
+ #include "internal.h"
+ 
+ 
++/* The address of this is a magic value, a pointer to which is returned by
++ * SSL_magic_tlsext_ticket_key_cb_aead_ptr(). It indicated that AEAD mode is
++ * being used. */
++static const char g_tlsext_ticket_cb_aead_magic = 0;
++
+ int ssl3_supports_cipher(const SSL_CIPHER *cipher) {
+   return 1;
+ }
+@@ -442,6 +447,10 @@ int SSL_CTX_set_tlsext_ticket_key_cb(
+   return 1;
+ }
+ 
++HMAC_CTX *SSL_magic_tlsext_ticket_key_cb_aead_ptr(void) {
++  return (HMAC_CTX *)&g_tlsext_ticket_cb_aead_magic;
++}
++
+ struct ssl_cipher_preference_list_st *ssl_get_cipher_preferences(SSL *ssl) {
+   if (ssl->cipher_list != NULL) {
+     return ssl->cipher_list;
+diff -rupN a/ssl/s3_srvr.c b/ssl/s3_srvr.c
+--- a/ssl/s3_srvr.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/s3_srvr.c	2016-05-05 13:16:31.435515124 +0930
+@@ -1979,10 +1979,12 @@ int ssl3_send_server_certificate(SSL *ss
+ /* send a new session ticket (not necessarily for a new session) */
+ int ssl3_send_new_session_ticket(SSL *ssl) {
+   int ret = -1;
++  int is_aead = 0;
+   uint8_t *session = NULL;
+   size_t session_len;
+   EVP_CIPHER_CTX ctx;
+   HMAC_CTX hctx;
++  EVP_AEAD_CTX aead_ctx;
+ 
+   EVP_CIPHER_CTX_init(&ctx);
+   HMAC_CTX_init(&hctx);
+@@ -1992,12 +1994,16 @@ int ssl3_send_new_session_ticket(SSL *ss
+     int len;
+     unsigned int hlen;
+     SSL_CTX *tctx = ssl->initial_ctx;
+-    uint8_t iv[EVP_MAX_IV_LENGTH];
++    uint8_t iv[EVP_MAX_IV_LENGTH < EVP_AEAD_MAX_NONCE_LENGTH
++               ? EVP_AEAD_MAX_NONCE_LENGTH : EVP_MAX_IV_LENGTH];
+     uint8_t key_name[16];
+     /* The maximum overhead of encrypting the session is 16 (key name) + IV +
+      * one block of encryption overhead + HMAC.  */
+-    const size_t max_ticket_overhead =
+-        16 + EVP_MAX_IV_LENGTH + EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE;
++    const size_t max_ticket_overhead = 16 +
++        (EVP_MAX_IV_LENGTH < EVP_AEAD_MAX_NONCE_LENGTH
++         ? EVP_AEAD_MAX_NONCE_LENGTH : EVP_MAX_IV_LENGTH) +
++        ((EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE) < EVP_AEAD_MAX_OVERHEAD
++         ? EVP_AEAD_MAX_OVERHEAD : EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE);
+ 
+     /* Serialize the SSL_SESSION to be encoded into the ticket. */
+     if (!SSL_SESSION_to_bytes_for_ticket(ssl->session, &session,
+@@ -2041,8 +2047,19 @@ int ssl3_send_new_session_ticket(SSL *ss
+     /* Initialize HMAC and cipher contexts. If callback present it does all the
+      * work otherwise use generated values from parent ctx. */
+     if (tctx->tlsext_ticket_key_cb) {
+-      if (tctx->tlsext_ticket_key_cb(ssl, key_name, iv, &ctx, &hctx,
+-                                     1 /* encrypt */) < 0) {
++      int cb_ret = tctx->tlsext_ticket_key_cb(ssl, key_name, iv, &ctx, &hctx,
++                                              1 /* encrypt */);
++      if (cb_ret == TLSEXT_TICKET_CB_WANT_AEAD) {
++        is_aead = 1;
++
++        EVP_AEAD_CTX_zero(&aead_ctx);
++
++        cb_ret = tctx->tlsext_ticket_key_cb(ssl, key_name, iv,
++                                            (EVP_CIPHER_CTX *)&aead_ctx,
++                                            SSL_magic_tlsext_ticket_key_cb_aead_ptr(),
++                                            1 /* encrypt */);
++      }
++      if (cb_ret < 0) {
+         goto err;
+       }
+     } else {
+@@ -2067,25 +2084,43 @@ int ssl3_send_new_session_ticket(SSL *ss
+     macstart = p;
+     memcpy(p, key_name, 16);
+     p += 16;
+-    /* output IV */
+-    memcpy(p, iv, EVP_CIPHER_CTX_iv_length(&ctx));
+-    p += EVP_CIPHER_CTX_iv_length(&ctx);
+-    /* Encrypt session data */
+-    if (!EVP_EncryptUpdate(&ctx, p, &len, session, session_len)) {
+-      goto err;
+-    }
+-    p += len;
+-    if (!EVP_EncryptFinal_ex(&ctx, p, &len)) {
+-      goto err;
+-    }
+-    p += len;
+ 
+-    if (!HMAC_Update(&hctx, macstart, p - macstart) ||
+-        !HMAC_Final(&hctx, p, &hlen)) {
+-      goto err;
++    if (is_aead) {
++      size_t out_len;
++      size_t nonce_len = EVP_AEAD_nonce_length(aead_ctx.aead);
++
++      /* output nonce */
++      memcpy(p, iv, nonce_len);
++      p += nonce_len;
++      /* Encrypt session data */
++      if (!EVP_AEAD_CTX_seal(&aead_ctx, p, &out_len,
++                             session_len + (max_ticket_overhead - nonce_len - 16),
++                             iv, nonce_len, session, session_len, NULL, 0)) {
++        goto err;
++      }
++      p += out_len;
++    } else {
++      /* output IV */
++      memcpy(p, iv, EVP_CIPHER_CTX_iv_length(&ctx));
++      p += EVP_CIPHER_CTX_iv_length(&ctx);
++      /* Encrypt session data */
++      if (!EVP_EncryptUpdate(&ctx, p, &len, session, session_len)) {
++        goto err;
++      }
++      p += len;
++      if (!EVP_EncryptFinal_ex(&ctx, p, &len)) {
++        goto err;
++      }
++      p += len;
++
++      if (!HMAC_Update(&hctx, macstart, p - macstart) ||
++          !HMAC_Final(&hctx, p, &hlen)) {
++        goto err;
++      }
++
++      p += hlen;
+     }
+ 
+-    p += hlen;
+     /* Now write out lengths: p points to end of data written */
+     /* Total length */
+     len = p - ssl_handshake_start(ssl);
+@@ -2105,6 +2140,11 @@ err:
+   OPENSSL_free(session);
+   EVP_CIPHER_CTX_cleanup(&ctx);
+   HMAC_CTX_cleanup(&hctx);
++
++  if (is_aead) {
++    EVP_AEAD_CTX_cleanup(&aead_ctx);
++  }
++
+   return ret;
+ }
+ 
+diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
+--- a/ssl/t1_lib.c	2016-05-04 23:02:25.000000000 +0930
++++ b/ssl/t1_lib.c	2016-05-05 13:17:36.071517349 +0930
+@@ -2405,6 +2405,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+                        size_t ticket_len, const uint8_t *session_id,
+                        size_t session_id_len) {
+   int ret = 1; /* Most errors are non-fatal. */
++  int is_aead = 0;
+   SSL_CTX *ssl_ctx = ssl->initial_ctx;
+   uint8_t *plaintext = NULL;
+ 
+@@ -2412,6 +2413,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+   HMAC_CTX_init(&hmac_ctx);
+   EVP_CIPHER_CTX cipher_ctx;
+   EVP_CIPHER_CTX_init(&cipher_ctx);
++  EVP_AEAD_CTX aead_ctx;
+ 
+   *out_renew_ticket = 0;
+   *out_session = NULL;
+@@ -2433,6 +2435,16 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+     int cb_ret = ssl_ctx->tlsext_ticket_key_cb(
+         ssl, (uint8_t *)ticket /* name */, (uint8_t *)iv, &cipher_ctx,
+         &hmac_ctx, 0 /* decrypt */);
++    if (cb_ret == TLSEXT_TICKET_CB_WANT_AEAD) {
++      is_aead = 1;
++
++      EVP_AEAD_CTX_zero(&aead_ctx);
++
++      cb_ret = ssl_ctx->tlsext_ticket_key_cb(
++          ssl, (uint8_t *)ticket /* name */, (uint8_t *)iv,
++          (EVP_CIPHER_CTX *)&aead_ctx, SSL_magic_tlsext_ticket_key_cb_aead_ptr(),
++          0 /* decrypt */);
++    }
+     if (cb_ret < 0) {
+       ret = 0;
+       goto done;
+@@ -2458,6 +2470,49 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+       goto done;
+     }
+   }
++
++  if (is_aead) {
++    const size_t nonce_len = EVP_AEAD_nonce_length(aead_ctx.aead);
++
++    /* Decrypt the session data. */
++    const uint8_t *ciphertext = ticket + SSL_TICKET_KEY_NAME_LEN + nonce_len;
++    size_t ciphertext_len = ticket_len - SSL_TICKET_KEY_NAME_LEN - nonce_len;
++    plaintext = OPENSSL_malloc(ciphertext_len);
++    if (plaintext == NULL) {
++      ret = 0;
++      goto done;
++    }
++
++    size_t plaintext_len;
++
++    if (!EVP_AEAD_CTX_open(&aead_ctx, plaintext, &plaintext_len, ciphertext_len,
++                           iv, nonce_len, ciphertext, ciphertext_len, NULL, 0)) {
++      goto done;
++    }
++
++    /* Decode the session. */
++#ifndef OPENSSL_NO_FEMTOZIP
++    SSL_SESSION *session = SSL_SESSION_from_compressed_bytes(ssl_ctx,
++                                                             plaintext,
++                                                             plaintext_len);
++#else
++    SSL_SESSION *session = SSL_SESSION_from_bytes(plaintext, plaintext_len);
++#endif
++    if (session == NULL) {
++      ERR_clear_error(); /* Don't leave an error on the queue. */
++      goto done;
++    }
++
++    /* Copy the client's session ID into the new session, to denote the ticket has
++     * been accepted. */
++    memcpy(session->session_id, session_id, session_id_len);
++    session->session_id_length = session_id_len;
++
++    *out_session = session;
++
++    goto done;
++  }
++
+   size_t iv_len = EVP_CIPHER_CTX_iv_length(&cipher_ctx);
+ 
+   /* Check the MAC at the end of the ticket. */
+@@ -2511,6 +2566,11 @@ done:
+   OPENSSL_free(plaintext);
+   HMAC_CTX_cleanup(&hmac_ctx);
+   EVP_CIPHER_CTX_cleanup(&cipher_ctx);
++
++  if (is_aead) {
++    EVP_AEAD_CTX_cleanup(&aead_ctx);
++  }
++
+   return ret;
+ }
+ 

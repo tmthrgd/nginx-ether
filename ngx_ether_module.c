@@ -4,7 +4,6 @@
 #include <ngx_event_connect.h>
 #include <ngx_event_pipe.h>
 
-#include <ngx_ether.h>
 #include "ngx_ether_module.h"
 
 #define NGX_ETHER_INSTALL_KEY_EVENT "install-key"
@@ -82,7 +81,7 @@ static const char *ngx_ether_msgpack_parse_map(const msgpack_object *obj, ...);
 static int ngx_ether_msgpack_write(void *data, const char *buf, size_t len);
 
 static int ngx_libc_cdecl ngx_ether_chash_cmp_points(const void *one, const void *two);
-static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
+static ngx_inline ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
 		const ngx_ether_chash_point_st *point, uint32_t hash);
 
 static void ngx_ether_memc_read_handler(ngx_event_t *rev);
@@ -142,9 +141,8 @@ ngx_module_t ngx_ether_module = {
 	NGX_MODULE_V1_PADDING
 };
 
-ngx_ether_peer_st *ngx_ether_create_peer(const ngx_ether_conf_st *conf)
+ngx_int_t ngx_ether_create_peer(ngx_ether_peer_st *peer)
 {
-	ngx_ether_peer_st *peer;
 	ngx_url_t u;
 	ngx_peer_connection_t *pc;
 	union {
@@ -152,40 +150,30 @@ ngx_ether_peer_st *ngx_ether_create_peer(const ngx_ether_conf_st *conf)
 		uint8_t byte[sizeof(uint64_t)];
 	} seq;
 
-	if (conf->serf.prefix.len > NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN
-		|| conf->memc.prefix.len > NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN) {
-		return NULL;
+	if (peer->serf.prefix.len > NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN
+		|| peer->memc.prefix.len > NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN) {
+		return NGX_ERROR;
 	}
 
-	peer = ngx_pcalloc(conf->pool, sizeof(ngx_ether_peer_st));
-	if (!peer) {
-		return NULL;
-	}
-
-	if (conf->serf.address.data) {
-		peer->serf.address = conf->serf.address;
-	} else {
+	if (!peer->serf.address.data) {
 		ngx_str_set(&peer->serf.address, "127.0.0.1:7373");
 	}
 
-	peer->serf.auth = conf->serf.auth;
-
-	peer->memc.hex = conf->memc.hex;
-
-	if (conf->serf.prefix.data) {
-		peer->serf.prefix = conf->serf.prefix;
-	} else {
+	if (!peer->serf.prefix.data) {
 		ngx_str_set(&peer->serf.prefix, "ether:");
 	}
 
-	if (conf->memc.prefix.data) {
-		peer->memc.prefix = conf->memc.prefix;
-	} else {
+	if (!peer->memc.prefix.data) {
 		ngx_str_set(&peer->memc.prefix, "ether:");
 	}
 
-	peer->pool = conf->pool;
-	peer->log = conf->log;
+	if (!peer->pool) {
+		peer->pool = ngx_cycle->pool;
+	}
+
+	if (!peer->log) {
+		peer->log = ngx_cycle->log;
+	}
 
 	ngx_memzero(&u, sizeof(ngx_url_t));
 	u.url = peer->serf.address;
@@ -194,7 +182,7 @@ ngx_ether_peer_st *ngx_ether_create_peer(const ngx_ether_conf_st *conf)
 
 	if (ngx_parse_url(peer->pool, &u) != NGX_OK || !u.addrs || !u.addrs[0].sockaddr) {
 		ngx_log_error(NGX_LOG_EMERG, peer->log, 0, "invalid url given in ether directive");
-		goto error;
+		return NGX_ERROR;
 	}
 
 	ngx_queue_init(&peer->memc.servers);
@@ -218,8 +206,8 @@ ngx_ether_peer_st *ngx_ether_create_peer(const ngx_ether_conf_st *conf)
 
 	do {
 		if (RAND_bytes(seq.byte, sizeof(uint64_t)) != 1) {
-			ngx_log_error(NGX_LOG_EMERG, conf->log, 0, "RAND_bytes failed");
-			goto error;
+			ngx_log_error(NGX_LOG_EMERG, peer->log, 0, "RAND_bytes failed");
+			return NGX_ERROR;
 		}
 
 		seq.u64 &= ~(uint64_t)NGX_ETHER_SERF_SEQ_STATE_MASK;
@@ -229,11 +217,7 @@ ngx_ether_peer_st *ngx_ether_create_peer(const ngx_ether_conf_st *conf)
 
 	peer->serf.send.tag = peer->pool;
 
-	return peer;
-
-error:
-	ngx_pfree(conf->pool, peer);
-	return NULL;
+	return NGX_OK;
 }
 
 ngx_int_t ngx_ether_connect_peer(ngx_ether_peer_st *peer)
@@ -2168,7 +2152,7 @@ static int ngx_libc_cdecl ngx_ether_chash_cmp_points(const void *one, const void
 	}
 }
 
-static ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
+static ngx_inline ngx_uint_t ngx_ether_find_chash_point(ngx_uint_t npoints,
 		const ngx_ether_chash_point_st *point, uint32_t hash)
 {
 	ngx_uint_t i, j, k;
@@ -3003,63 +2987,4 @@ void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op)
 	}
 
 	ngx_pfree(op->server->pool, op);
-}
-
-void ngx_ether_memc_set_log(ngx_ether_memc_op_st *op, ngx_log_t *log)
-{
-	op->log = log;
-}
-
-void ngx_ether_memc_set_handler(ngx_ether_memc_op_st *op, ngx_ether_memc_op_handler handler,
-		void *data)
-{
-	op->handler = handler;
-	op->handler_data = data;
-}
-
-void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer, ngx_str_t *key, u_char *buf)
-{
-	u_char *p;
-
-	if (peer->memc.hex) {
-		p = buf + peer->memc.prefix.len;
-
-		key->len = ngx_hex_dump(p, key->data, key->len) - p;
-		key->data = p;
-	}
-
-	if (peer->memc.prefix.len) {
-		p = ngx_cpymem(buf, peer->memc.prefix.data, peer->memc.prefix.len);
-
-		if (!peer->memc.hex) {
-			p = ngx_cpymem(p, key->data, key->len);
-		}
-
-		key->data = buf;
-		key->len += peer->memc.prefix.len;
-	}
-}
-
-const ngx_ether_key_st *ngx_ether_get_key(const ngx_ether_peer_st *peer,
-		const u_char name[SSL_TICKET_KEY_NAME_LEN])
-{
-	const ngx_queue_t *q;
-	const ngx_ether_key_st *key;
-
-	for (q = ngx_queue_head(&peer->keys);
-		q != ngx_queue_sentinel(&peer->keys);
-		q = ngx_queue_next(q)) {
-		key = ngx_queue_data(q, ngx_ether_key_st, queue);
-
-		if (ngx_memcmp(name, key->name, SSL_TICKET_KEY_NAME_LEN) == 0) {
-			return key;
-		}
-	}
-
-	return NULL;
-}
-
-const ngx_ether_key_st *ngx_ether_get_default_key(const ngx_ether_peer_st *peer)
-{
-	return peer->default_key;
 }

@@ -4,7 +4,6 @@
 #include <ngx_event_connect.h>
 #include <ngx_event_pipe.h>
 
-#include <ngx_ether.h>
 #include "ngx_ether_module.h"
 
 #include <ngx_http_lua_api.h>
@@ -56,7 +55,7 @@
 	MACRO(RDECRQ, range_decrementq)
 
 typedef struct {
-	ngx_ether_peer_st *peer;
+	ngx_ether_peer_st peer;
 } ngx_ether_resty_ether_userdata_st;
 
 typedef struct {
@@ -71,7 +70,7 @@ typedef struct {
 		luaL_error(L, "ngx_pstrdup failed"); \
 	}
 
-static ngx_int_t ngx_ether_init_process(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle);
 
 static ngx_int_t ngx_ether_resty_ether_memc_resume(ngx_http_request_t *r);
 static void ngx_ether_resty_ether_memc_handler(ngx_ether_memc_op_st *op, void *data);
@@ -89,7 +88,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(DECLARE_RESTY_ETHER_MEMC_OP)
 static int ngx_ether_resty_ether_destroy(lua_State *L);
 
 static int ngx_ether_resty_ether_preload(lua_State *L);
-static ngx_int_t ngx_ether_inject_lua_memc(ngx_conf_t *cf);
+static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf);
 
 static ngx_array_t ngx_ether_peers;
 static int ngx_ether_has_init;
@@ -111,58 +110,33 @@ static const luaL_Reg ngx_ether_resty_ether_funcs[] = {
 	{ NULL, NULL }
 };
 
-static ngx_str_t ngx_event_ether_lua_name = ngx_string("ether_lua");
-
-static ngx_event_module_t ngx_event_ether_lua_ctx = {
-	&ngx_event_ether_lua_name,
-	NULL,  /* create configuration */
-	NULL,  /*init configuration */
-
-	{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
-};
-
-ngx_module_t ngx_event_ether_lua_module = {
-	NGX_MODULE_V1,
-	&ngx_event_ether_lua_ctx,  /* module context */
-	NULL,                      /* module directives */
-	NGX_EVENT_MODULE,          /* module type */
-	NULL,                      /* init master */
-	NULL,                      /* init module */
-	ngx_ether_init_process,    /* init process */
-	NULL,                      /* init thread */
-	NULL,                      /* exit thread */
-	NULL,                      /* exit process */
-	NULL,                      /* exit master */
-	NGX_MODULE_V1_PADDING
-};
-
 static ngx_http_module_t ngx_http_ether_lua_ctx = {
-	NULL,                       /* preconfiguration */
-	ngx_ether_inject_lua_memc,  /* postconfiguration */
-	NULL,                       /* create main configuration */
-	NULL,                       /* init main configuration */
-	NULL,                       /* create server configuration */
-	NULL,                       /* merge server configuration */
-	NULL,                       /* create location configuration */
-	NULL                        /* merge location configuration */
+	NULL,                           /* preconfiguration */
+	ngx_http_ether_lua_inject_lua,  /* postconfiguration */
+	NULL,                           /* create main configuration */
+	NULL,                           /* init main configuration */
+	NULL,                           /* create server configuration */
+	NULL,                           /* merge server configuration */
+	NULL,                           /* create location configuration */
+	NULL                            /* merge location configuration */
 };
 
 ngx_module_t ngx_http_ether_lua_module = {
 	NGX_MODULE_V1,
-	&ngx_http_ether_lua_ctx,  /* module context */
-	NULL,                     /* module directives */
-	NGX_HTTP_MODULE,          /* module type */
-	NULL,                     /* init master */
-	NULL,                     /* init module */
-	NULL,                     /* init process */
-	NULL,                     /* init thread */
-	NULL,                     /* exit thread */
-	NULL,                     /* exit process */
-	NULL,                     /* exit master */
+	&ngx_http_ether_lua_ctx,          /* module context */
+	NULL,                             /* module directives */
+	NGX_HTTP_MODULE,                  /* module type */
+	NULL,                             /* init master */
+	NULL,                             /* init module */
+	ngx_http_ether_lua_init_process,  /* init process */
+	NULL,                             /* init thread */
+	NULL,                             /* exit thread */
+	NULL,                             /* exit process */
+	NULL,                             /* exit master */
 	NGX_MODULE_V1_PADDING
 };
 
-static ngx_int_t ngx_ether_init_process(ngx_cycle_t *cycle)
+static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle)
 {
 	ngx_ether_peer_st **peer;
 	size_t i;
@@ -187,37 +161,42 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 #if 0
 	ngx_http_request_t *r;
 #endif
-	ngx_ether_conf_st conf;
-	ngx_ether_peer_st *peer, **init_peer;
 	ngx_ether_resty_ether_userdata_st *ud;
+	ngx_ether_peer_st *peer, **init_peer;
 
 	n = lua_gettop(L);
 	if (n != 0 && n != 1) {
 		return luaL_error(L, "attempt to pass %d arguments, but accepted 0 or 1", n);
 	}
 
-	ngx_memzero(&conf, sizeof(ngx_ether_conf_st));
+	ud = lua_newuserdata(L, sizeof(ngx_ether_resty_ether_userdata_st));
+	ngx_memzero(ud, sizeof(ngx_ether_resty_ether_userdata_st));
+
+	luaL_getmetatable(L, "_M");
+	lua_setmetatable(L, -2);
+
+	peer = &ud->peer;
 
 #if 0
 	r = ngx_http_lua_get_req(L);
 
 	if (r && r->pool) {
-		conf.pool = r->pool;
+		peer->pool = r->pool;
 	} else {
-		conf.pool = ngx_cycle->pool;
+		peer->pool = ngx_cycle->pool;
 	}
 
 	if (r && r->connection && r->connection->log) {
-		conf.log = r->connection->log;
+		peer->log = r->connection->log;
 	} else {
-		conf.log = ngx_cycle->log;
+		peer->log = ngx_cycle->log;
 	}
 #else
-	conf.pool = ngx_cycle->pool;
-	conf.log = ngx_cycle->log;
+	peer->pool = ngx_cycle->pool;
+	peer->log = ngx_cycle->log;
 #endif
 
-	conf.memc.hex = 1;
+	peer->memc.hex = 1;
 
 	if (!n) {
 		goto create_peer;
@@ -229,19 +208,19 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 
 		lua_getfield(L, -1, "address");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, conf.pool, &conf.serf.address);
+			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.address);
 		}
 		lua_remove(L, -1);
 
 		lua_getfield(L, -1, "auth");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, conf.pool, &conf.serf.auth);
+			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.auth);
 		}
 		lua_remove(L, -1);
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, conf.pool, &conf.serf.prefix);
+			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.prefix);
 		}
 		lua_remove(L, -1);
 	}
@@ -254,21 +233,22 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 		lua_getfield(L, -1, "hex");
 		if (!lua_isnoneornil(L, -1)) {
 			luaL_checktype(L, -1, LUA_TBOOLEAN);
-			conf.memc.hex = lua_toboolean(L, -1);
+			peer->memc.hex = lua_toboolean(L, -1);
 		}
 		lua_remove(L, -1);
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, conf.pool, &conf.memc.prefix);
+			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->memc.prefix);
 		}
 		lua_remove(L, -1);
 	}
 	lua_remove(L, -1);
 
 create_peer:
-	peer = ngx_ether_create_peer(&conf);
-	if (!peer) {
+	if (ngx_ether_create_peer(peer) != NGX_OK) {
+		peer->pool = NULL;
+
 		lua_pushnil(L);
 		lua_pushliteral(L, "failed to create peer struct");
 		return 2;
@@ -292,12 +272,6 @@ create_peer:
 
 		*init_peer = peer;
 	}
-
-	ud = lua_newuserdata(L, sizeof(ngx_ether_resty_ether_userdata_st));
-	ud->peer = peer;
-
-	luaL_getmetatable(L, "_M");
-	lua_setmetatable(L, -2);
 
 	return 1;
 }
@@ -338,7 +312,7 @@ static int ngx_ether_resty_ether_default_key(lua_State *L)
 
 	ud = luaL_checkudata(L, 1, "_M");
 
-	key = ngx_ether_get_default_key(ud->peer);
+	key = ud->peer.default_key;
 	if (!key) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "no default key");
@@ -370,7 +344,7 @@ static int ngx_ether_resty_ether_get_key(lua_State *L)
 		return 2;
 	}
 
-	key = ngx_ether_get_key(ud->peer, name);
+	key = ngx_ether_get_key(&ud->peer, name);
 	if (!key) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "unkown key");
@@ -392,7 +366,7 @@ static int ngx_ether_resty_ether_has_default_key(lua_State *L)
 
 	ud = luaL_checkudata(L, 1, "_M");
 
-	lua_pushboolean(L, ngx_ether_get_default_key(ud->peer) != NULL);
+	lua_pushboolean(L, ud->peer.default_key != NULL);
 	return 1;
 }
 
@@ -777,9 +751,9 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 		return luaL_error(L, "ngx_palloc failed");
 	}
 
-	ngx_ether_process_session_key_id(ud->peer, &kv.key, buf);
+	ngx_ether_process_session_key_id(&ud->peer, &kv.key, buf);
 
-	server = ngx_ether_get_memc_server(ud->peer, &kv.key);
+	server = ngx_ether_get_memc_server(&ud->peer, &kv.key);
 	if (!server) {
 		ngx_pfree(r->pool, buf);
 
@@ -865,9 +839,9 @@ static int ngx_ether_resty_ether_destroy(lua_State *L)
 
 	ud = luaL_checkudata(L, 1, "_M");
 
-	if (ud->peer) {
-		ngx_ether_cleanup_peer(ud->peer);
-		ud->peer = NULL;
+	if (ud->peer.pool) {
+		ngx_ether_cleanup_peer(&ud->peer);
+		ud->peer.pool = NULL;
 	}
 
 	return 0;
@@ -900,7 +874,7 @@ static int ngx_ether_resty_ether_preload(lua_State *L)
 	return 1;
 }
 
-static ngx_int_t ngx_ether_inject_lua_memc(ngx_conf_t *cf)
+static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf)
 {
 	if (!ngx_ether_peers.elts && ngx_array_init(&ngx_ether_peers, cf->cycle->pool, 16,
 			sizeof(ngx_ether_peer_st *)) != NGX_OK) {
