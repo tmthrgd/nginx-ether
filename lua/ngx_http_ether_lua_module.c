@@ -288,8 +288,6 @@ static int ngx_http_ether_lua_new(lua_State *L)
 
 create_peer:
 	if (ngx_ether_create_peer(peer) != NGX_OK) {
-		peer->pool = NULL;
-
 		lua_pop(L, 1);
 		lua_pushnil(L);
 		lua_pushliteral(L, "failed to create peer struct");
