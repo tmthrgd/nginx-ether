@@ -56,14 +56,14 @@
 
 typedef struct {
 	ngx_ether_peer_st peer;
-} ngx_ether_resty_ether_userdata_st;
+} ngx_http_ether_lua_userdata_st;
 
 typedef struct {
 	ngx_ether_memc_op_st *op;
 	ngx_http_request_t *r;
-} ngx_ether_resty_ether_memc_op_data_st;
+} ngx_http_ether_lua_memc_op_data_st;
 
-#define ngx_ether_resty_ether_get_str(L, idx, pool, str) \
+#define ngx_http_ether_lua_get_str(L, idx, pool, str) \
 	(str)->data = (u_char *)luaL_checklstring(L, -1, &(str)->len); \
 	(str)->data = ngx_pstrdup((pool), (str)); \
 	if (!(str)->data) { \
@@ -72,41 +72,41 @@ typedef struct {
 
 static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle);
 
-static ngx_int_t ngx_ether_resty_ether_memc_resume(ngx_http_request_t *r);
-static void ngx_ether_resty_ether_memc_handler(ngx_ether_memc_op_st *op, void *data);
-static void ngx_ether_resty_ether_memc_op_cleanup(void *data);
+static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r);
+static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data);
+static void ngx_http_ether_lua_memc_op_cleanup(void *data);
 
-static int ngx_ether_resty_ether_new(lua_State *L);
-static int ngx_ether_resty_ether_default_key(lua_State *L);
-static int ngx_ether_resty_ether_get_key(lua_State *L);
-static int ngx_ether_resty_ether_has_default_key(lua_State *L);
-static int ngx_ether_resty_ether_memc_op_cmd(lua_State *L, protocol_binary_command cmd);
-static int ngx_ether_resty_ether_memc_op(lua_State *L);
+static int ngx_http_ether_lua_new(lua_State *L);
+static int ngx_http_ether_lua_default_key(lua_State *L);
+static int ngx_http_ether_lua_get_key(lua_State *L);
+static int ngx_http_ether_lua_has_default_key(lua_State *L);
+static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command cmd);
+static int ngx_http_ether_lua_memc_op(lua_State *L);
 #define DECLARE_RESTY_ETHER_MEMC_OP(op, name) \
-	static int ngx_ether_resty_ether_memc_##name(lua_State *L);
+	static int ngx_http_ether_lua_memc_##name(lua_State *L);
 NGX_ETHER_FOREACH_RESTY_MEMC_OP(DECLARE_RESTY_ETHER_MEMC_OP)
-static int ngx_ether_resty_ether_destroy(lua_State *L);
+static int ngx_http_ether_lua_destroy(lua_State *L);
 
-static int ngx_ether_resty_ether_preload(lua_State *L);
+static int ngx_http_ether_lua_preload(lua_State *L);
 static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf);
 
 static ngx_array_t ngx_ether_peers;
 static int ngx_ether_has_init;
 
-static const luaL_Reg ngx_ether_resty_ether_meths[] = {
-	{ "default_key", ngx_ether_resty_ether_default_key },
-	{ "get_key", ngx_ether_resty_ether_get_key },
-	{ "has_default_key", ngx_ether_resty_ether_has_default_key },
-	{ "memc_op", ngx_ether_resty_ether_memc_op },
+static const luaL_Reg ngx_http_ether_lua_meths[] = {
+	{ "default_key", ngx_http_ether_lua_default_key },
+	{ "get_key", ngx_http_ether_lua_get_key },
+	{ "has_default_key", ngx_http_ether_lua_has_default_key },
+	{ "memc_op", ngx_http_ether_lua_memc_op },
 #define PUSH_FUNC_RESTY_ETHER_MEMC_OP(op, name) \
-	{ "memc_" #name, ngx_ether_resty_ether_memc_##name },
+	{ "memc_" #name, ngx_http_ether_lua_memc_##name },
 NGX_ETHER_FOREACH_RESTY_MEMC_OP(PUSH_FUNC_RESTY_ETHER_MEMC_OP)
-	{ "__gc", ngx_ether_resty_ether_destroy },
+	{ "__gc", ngx_http_ether_lua_destroy },
 	{ NULL, NULL }
 };
 
-static const luaL_Reg ngx_ether_resty_ether_funcs[] = {
-	{ "new", ngx_ether_resty_ether_new },
+static const luaL_Reg ngx_http_ether_lua_funcs[] = {
+	{ "new", ngx_http_ether_lua_new },
 	{ NULL, NULL }
 };
 
@@ -155,13 +155,13 @@ static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle)
 	return NGX_OK;
 }
 
-static int ngx_ether_resty_ether_new(lua_State *L)
+static int ngx_http_ether_lua_new(lua_State *L)
 {
 	int n;
 #if 0
 	ngx_http_request_t *r;
 #endif
-	ngx_ether_resty_ether_userdata_st *ud;
+	ngx_http_ether_lua_userdata_st *ud;
 	ngx_ether_peer_st *peer, **init_peer;
 
 	n = lua_gettop(L);
@@ -169,8 +169,8 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 		return luaL_error(L, "attempt to pass %d arguments, but accepted 0 or 1", n);
 	}
 
-	ud = lua_newuserdata(L, sizeof(ngx_ether_resty_ether_userdata_st));
-	ngx_memzero(ud, sizeof(ngx_ether_resty_ether_userdata_st));
+	ud = lua_newuserdata(L, sizeof(ngx_http_ether_lua_userdata_st));
+	ngx_memzero(ud, sizeof(ngx_http_ether_lua_userdata_st));
 
 	luaL_getmetatable(L, "_M");
 	lua_setmetatable(L, -2);
@@ -208,19 +208,19 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 
 		lua_getfield(L, -1, "address");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.address);
+			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.address);
 		}
 		lua_remove(L, -1);
 
 		lua_getfield(L, -1, "auth");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.auth);
+			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.auth);
 		}
 		lua_remove(L, -1);
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->serf.prefix);
+			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->serf.prefix);
 		}
 		lua_remove(L, -1);
 	}
@@ -239,7 +239,7 @@ static int ngx_ether_resty_ether_new(lua_State *L)
 
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
-			ngx_ether_resty_ether_get_str(L, -1, peer->pool, &peer->memc.prefix);
+			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->memc.prefix);
 		}
 		lua_remove(L, -1);
 	}
@@ -276,7 +276,7 @@ create_peer:
 	return 1;
 }
 
-static int ngx_ether_resty_ether_return_key(lua_State *L, const ngx_ether_key_st *key)
+static int ngx_http_ether_lua_return_key(lua_State *L, const ngx_ether_key_st *key)
 {
 	lua_createtable(L, 0, 4);
 
@@ -299,10 +299,10 @@ static int ngx_ether_resty_ether_return_key(lua_State *L, const ngx_ether_key_st
 	return 1;
 }
 
-static int ngx_ether_resty_ether_default_key(lua_State *L)
+static int ngx_http_ether_lua_default_key(lua_State *L)
 {
 	int n;
-	const ngx_ether_resty_ether_userdata_st *ud;
+	const ngx_http_ether_lua_userdata_st *ud;
 	const ngx_ether_key_st *key;
 
 	n = lua_gettop(L);
@@ -319,13 +319,13 @@ static int ngx_ether_resty_ether_default_key(lua_State *L)
 		return 2;
 	}
 
-	return ngx_ether_resty_ether_return_key(L, key);
+	return ngx_http_ether_lua_return_key(L, key);
 }
 
-static int ngx_ether_resty_ether_get_key(lua_State *L)
+static int ngx_http_ether_lua_get_key(lua_State *L)
 {
 	int n;
-	const ngx_ether_resty_ether_userdata_st *ud;
+	const ngx_http_ether_lua_userdata_st *ud;
 	const ngx_ether_key_st *key;
 	const u_char *name;
 	size_t len;
@@ -351,13 +351,13 @@ static int ngx_ether_resty_ether_get_key(lua_State *L)
 		return 2;
 	}
 
-	return ngx_ether_resty_ether_return_key(L, key);
+	return ngx_http_ether_lua_return_key(L, key);
 }
 
-static int ngx_ether_resty_ether_has_default_key(lua_State *L)
+static int ngx_http_ether_lua_has_default_key(lua_State *L)
 {
 	int n;
-	const ngx_ether_resty_ether_userdata_st *ud;
+	const ngx_http_ether_lua_userdata_st *ud;
 
 	n = lua_gettop(L);
 	if (n != 1) {
@@ -370,14 +370,14 @@ static int ngx_ether_resty_ether_has_default_key(lua_State *L)
 	return 1;
 }
 
-static ngx_int_t ngx_ether_resty_ether_memc_resume(ngx_http_request_t *r)
+static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r)
 {
 	lua_State *vm, *L;
 	ngx_connection_t *c;
 	ngx_int_t rc;
 	ngx_http_lua_ctx_t *ctx;
 	ngx_http_lua_co_ctx_t *coctx;
-	ngx_ether_resty_ether_memc_op_data_st *op_data;
+	ngx_http_ether_lua_memc_op_data_st *op_data;
 	ngx_ether_memc_op_st *op;
 	ngx_str_t value;
 	int nret;
@@ -478,7 +478,7 @@ static ngx_int_t ngx_ether_resty_ether_memc_resume(ngx_http_request_t *r)
 	}
 
 	coctx->cleanup = NULL;
-	ngx_ether_resty_ether_memc_op_cleanup(op_data);
+	ngx_http_ether_lua_memc_op_cleanup(op_data);
 
 	c = r->connection;
 	vm = ngx_http_lua_get_lua_vm(r, ctx);
@@ -505,12 +505,12 @@ static ngx_int_t ngx_ether_resty_ether_memc_resume(ngx_http_request_t *r)
 	return rc;
 }
 
-static void ngx_ether_resty_ether_memc_handler(ngx_ether_memc_op_st *op, void *data)
+static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data)
 {
 	ngx_http_lua_ctx_t *ctx;
 	ngx_http_log_ctx_t *log_ctx;
 	ngx_http_lua_co_ctx_t *coctx = data;
-	ngx_ether_resty_ether_memc_op_data_st *op_data;
+	ngx_http_ether_lua_memc_op_data_st *op_data;
 	ngx_http_request_t *r;
 	ngx_connection_t *c;
 
@@ -520,7 +520,7 @@ static void ngx_ether_resty_ether_memc_handler(ngx_ether_memc_op_st *op, void *d
 
 	ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 	if (!ctx) {
-		// ngx_ether_resty_ether_memc_op_cleanup(op_data);
+		// ngx_http_ether_lua_memc_op_cleanup(op_data);
 		return;
 	}
 
@@ -537,18 +537,18 @@ static void ngx_ether_resty_ether_memc_handler(ngx_ether_memc_op_st *op, void *d
 	ctx->cur_co_ctx = coctx;
 
 	if (ctx->entered_content_phase) {
-		(void) ngx_ether_resty_ether_memc_resume(r);
+		(void) ngx_http_ether_lua_memc_resume(r);
 	} else {
-		ctx->resume_handler = ngx_ether_resty_ether_memc_resume;
+		ctx->resume_handler = ngx_http_ether_lua_memc_resume;
 		ngx_http_core_run_phases(r);
 	}
 
 	ngx_http_run_posted_requests(c);
 }
 
-static void ngx_ether_resty_ether_memc_op_cleanup(void *data)
+static void ngx_http_ether_lua_memc_op_cleanup(void *data)
 {
-	ngx_ether_resty_ether_memc_op_data_st *op_data = data;
+	ngx_http_ether_lua_memc_op_data_st *op_data = data;
 
 	if (op_data->op) {
 		ngx_ether_memc_cleanup_operation(op_data->op);
@@ -556,14 +556,14 @@ static void ngx_ether_resty_ether_memc_op_cleanup(void *data)
 	}
 }
 
-static int ngx_ether_resty_ether_memc_op_cmd(lua_State *L, protocol_binary_command cmd)
+static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command cmd)
 {
 	int n, idx = 1, req_idx = -1;
 	ngx_http_request_t *r;
 	ngx_http_lua_ctx_t *ctx;
 	ngx_http_lua_co_ctx_t *coctx;
-	const ngx_ether_resty_ether_userdata_st *ud;
-	ngx_ether_resty_ether_memc_op_data_st *op_data;
+	const ngx_http_ether_lua_userdata_st *ud;
+	ngx_http_ether_lua_memc_op_data_st *op_data;
 	const char *cmd_str;
 	ngx_keyval_t kv;
 	u_char *buf;
@@ -804,10 +804,10 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 	}
 #endif
 
-	op->handler = ngx_ether_resty_ether_memc_handler;
+	op->handler = ngx_http_ether_lua_memc_handler;
 	op->handler_data = coctx;
 
-	op_data = ngx_pcalloc(r->pool, sizeof(ngx_ether_resty_ether_memc_op_data_st));
+	op_data = ngx_pcalloc(r->pool, sizeof(ngx_http_ether_lua_memc_op_data_st));
 	if (!op_data) {
 		return luaL_error(L, "ngx_pcalloc failed");
 	}
@@ -816,26 +816,26 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 	op_data->r = r;
 
 	ngx_http_lua_cleanup_pending_operation(coctx);
-	coctx->cleanup = ngx_ether_resty_ether_memc_op_cleanup;
+	coctx->cleanup = ngx_http_ether_lua_memc_op_cleanup;
 	coctx->data = op_data;
 
 	return lua_yield(L, 0);
 }
 
-static int ngx_ether_resty_ether_memc_op(lua_State *L)
+static int ngx_http_ether_lua_memc_op(lua_State *L)
 {
-	return ngx_ether_resty_ether_memc_op_cmd(L, (protocol_binary_command)-1);
+	return ngx_http_ether_lua_memc_op_cmd(L, (protocol_binary_command)-1);
 }
 
 #define DEFINE_RESTY_ETHER_MEMC_OP(op, name) \
-	static int ngx_ether_resty_ether_memc_##name(lua_State *L) { \
-		return ngx_ether_resty_ether_memc_op_cmd(L, PROTOCOL_BINARY_CMD_##op); \
+	static int ngx_http_ether_lua_memc_##name(lua_State *L) { \
+		return ngx_http_ether_lua_memc_op_cmd(L, PROTOCOL_BINARY_CMD_##op); \
 	}
 NGX_ETHER_FOREACH_RESTY_MEMC_OP(DEFINE_RESTY_ETHER_MEMC_OP)
 
-static int ngx_ether_resty_ether_destroy(lua_State *L)
+static int ngx_http_ether_lua_destroy(lua_State *L)
 {
-	ngx_ether_resty_ether_userdata_st *ud;
+	ngx_http_ether_lua_userdata_st *ud;
 
 	ud = luaL_checkudata(L, 1, "_M");
 
@@ -847,7 +847,7 @@ static int ngx_ether_resty_ether_destroy(lua_State *L)
 	return 0;
 }
 
-static int ngx_ether_resty_ether_preload(lua_State *L)
+static int ngx_http_ether_lua_preload(lua_State *L)
 {
 	const luaL_Reg *l;
 
@@ -856,14 +856,14 @@ static int ngx_ether_resty_ether_preload(lua_State *L)
 	lua_setfield(L, -2, "__index");
 
 	/* luaL_setfuncs */
-	for (l = ngx_ether_resty_ether_meths; l->name != NULL; l++) {
+	for (l = ngx_http_ether_lua_meths; l->name != NULL; l++) {
 		lua_pushcclosure(L, l->func, 0);
 		lua_setfield(L, -2, l->name);
 	}
 
 	/* luaL_newlib */
-	lua_createtable(L, 0, (sizeof(ngx_ether_resty_ether_funcs) / sizeof(luaL_Reg)) - 1 + 1);
-	for (l = ngx_ether_resty_ether_funcs; l->name != NULL; l++) {
+	lua_createtable(L, 0, (sizeof(ngx_http_ether_lua_funcs) / sizeof(luaL_Reg)) - 1 + 1);
+	for (l = ngx_http_ether_lua_funcs; l->name != NULL; l++) {
 		lua_pushcclosure(L, l->func, 0);
 		lua_setfield(L, -2, l->name);
 	}
@@ -882,6 +882,6 @@ static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf)
 		return NGX_ERROR;
 	}
 
-	return ngx_http_lua_add_package_preload(cf, "resty.ether",
-		ngx_ether_resty_ether_preload);
+	return ngx_http_lua_add_package_preload(cf, "nginx.ether",
+		ngx_http_ether_lua_preload);
 }
