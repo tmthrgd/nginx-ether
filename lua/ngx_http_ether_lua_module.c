@@ -567,6 +567,7 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	const ngx_http_ether_lua_userdata_st *ud;
 	ngx_http_ether_lua_memc_op_data_st *op_data;
 	const char *cmd_str;
+	size_t cmd_str_len;
 	ngx_keyval_t kv;
 	u_char *buf = NULL;
 	ngx_ether_memc_server_st *server;
@@ -614,10 +615,10 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	ud = luaL_checkudata(L, idx++, "_M");
 
 	if (cmd == (protocol_binary_command)-1) {
-		cmd_str = luaL_checkstring(L, idx++);
+		cmd_str = luaL_checklstring(L, idx++, &cmd_str_len);
 
 #define CHECK_RESTY_ETHER_CMD_STRS(op, name) \
-		if (ngx_strcmp(cmd_str, #name) == 0) { \
+		if (cmd_str_len == sizeof(#name) - 1 && ngx_strcmp(cmd_str, #name) == 0) { \
 			cmd = PROTOCOL_BINARY_CMD_##op; \
 		} else
 NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
