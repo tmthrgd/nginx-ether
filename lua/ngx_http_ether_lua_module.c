@@ -655,7 +655,8 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 					req.incr.message.body.delta = lua_tonumber(L, idx++);
 					break;
 				default:
-					return luaL_error(L, "argument 4 must be string, got: number");
+					return luaL_error(L,
+						"argument 4 must be string, got: number");
 			}
 		} else if (lua_isstring(L, idx)) {
 			switch (cmd) {
@@ -663,19 +664,23 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 				case PROTOCOL_BINARY_CMD_DECREMENT:
 				case PROTOCOL_BINARY_CMD_INCREMENTQ:
 				case PROTOCOL_BINARY_CMD_DECREMENTQ:
-					return luaL_error(L, "argument 4 must be number, got: string");
+					return luaL_error(L,
+						"argument 4 must be number, got: string");
 				default:
-					kv.value.data = (u_char *)luaL_checklstring(L, idx++, &kv.value.len);
+					kv.value.data = (u_char *)luaL_checklstring(L, idx++,
+							&kv.value.len);
 					break;
 			}
 		} else if (lua_istable(L, idx)) {
 			if (n > 4) {
-				return luaL_error(L, "attempt to pass %d arguments, but accepted 4", n);
+				return luaL_error(L,
+					"attempt to pass %d arguments, but accepted 4", n);
 			}
 
 			req_idx = idx++;
 		} else {
-			return luaL_error(L, "argument 4 must be string, number or table, got: %s", lua_typename(L, lua_type(L, idx++)));
+			return luaL_error(L, "argument 4 must be string, number or table, got: %s",
+				lua_typename(L, lua_type(L, idx++)));
 		}
 	}
 
@@ -892,6 +897,5 @@ static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf)
 		return NGX_ERROR;
 	}
 
-	return ngx_http_lua_add_package_preload(cf, "nginx.ether",
-		ngx_http_ether_lua_preload);
+	return ngx_http_lua_add_package_preload(cf, "nginx.ether", ngx_http_ether_lua_preload);
 }
