@@ -292,7 +292,7 @@ void ngx_ether_cleanup_peer(ngx_ether_peer_st *peer)
 		q = ngx_queue_next(q)) {
 		key = ngx_queue_data(q, ngx_ether_key_st, queue);
 
-		ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
+		ngx_memzero(key->key, key->len);
 	}
 }
 
@@ -938,7 +938,7 @@ static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_pee
 	ngx_ether_key_st *key;
 	ngx_queue_t *q, *prev_q;
 	const char *err;
-	size_t num;
+	size_t num, key_len;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif /* NGX_DEBUG */
@@ -1049,7 +1049,7 @@ static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_pee
 			ngx_queue_remove(q);
 			q = prev_q;
 
-			ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
+			ngx_memzero(key->key, key->len);
 			ngx_pfree(c->pool, key);
 		}
 
@@ -1063,7 +1063,7 @@ static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_pee
 
 	if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, NGX_ETHER_INSTALL_KEY_EVENT,
 			name.via.str.size - peer->serf.prefix.len) == 0) {
-		if (payload.via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
+		if (payload.via.bin.size <= SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid payload size");
 			goto error;
 		}
@@ -1085,18 +1085,18 @@ static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_pee
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st));
+		key_len = payload.via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+
+		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st) + key_len);
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
 		}
 
-		key->key_len = payload.via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+		key->len = key_len;
 
 		ngx_memcpy(key->name, payload.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-		ngx_memcpy(key->key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->key_len);
-
-		key->aead = EVP_aead_aes_128_gcm();
+		ngx_memcpy(key->key, payload.via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->len);
 
 		ngx_queue_insert_tail(&peer->keys, &key->queue);
 	} else if (ngx_strncmp(name.via.str.ptr + peer->serf.prefix.len, NGX_ETHER_REMOVE_KEY_EVENT,
@@ -1120,7 +1120,7 @@ static ngx_int_t ngx_ether_handle_key_ev_resp(ngx_connection_t *c, ngx_ether_pee
 				continue;
 			}
 
-			ngx_memzero(key->key, EVP_AEAD_MAX_KEY_LENGTH);
+			ngx_memzero(key->key, key->len);
 
 			ngx_queue_remove(q);
 
@@ -1218,7 +1218,7 @@ static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_
 	ngx_queue_t *q;
 	const char *err;
 	ngx_buf_t dummy_recv;
-	size_t i;
+	size_t i, key_len;
 	int was_default = 0;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
@@ -1319,7 +1319,7 @@ static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_
 			goto error;
 		}
 
-		if (ptr->via.bin.size != SSL_TICKET_KEY_NAME_LEN + 16) {
+		if (ptr->via.bin.size <= SSL_TICKET_KEY_NAME_LEN) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "invalid ssl session ticket key size");
 			goto error;
 		}
@@ -1344,18 +1344,18 @@ static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_
 			}
 		}
 
-		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st));
+		key_len = ptr->via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+
+		key = ngx_pcalloc(c->pool, sizeof(ngx_ether_key_st) + key_len);
 		if (!key) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "failed to allocate memory");
 			goto error;
 		}
 
-		key->key_len = ptr->via.bin.size - SSL_TICKET_KEY_NAME_LEN;
+		key->len = key_len;
 
 		ngx_memcpy(key->name, ptr->via.bin.ptr, SSL_TICKET_KEY_NAME_LEN);
-		ngx_memcpy(key->key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->key_len);
-
-		key->aead = EVP_aead_aes_128_gcm();
+		ngx_memcpy(key->key, ptr->via.bin.ptr + SSL_TICKET_KEY_NAME_LEN, key->len);
 
 		key->was_default = was_default;
 

@@ -8,8 +8,6 @@
 
 #include "protocol_binary.h"
 
-#include <openssl/aes.h>
-
 #define NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN 64
 #define NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN 64
 
@@ -89,14 +87,12 @@ typedef struct ngx_ether_memc_op_st {
 typedef struct {
 	u_char name[SSL_TICKET_KEY_NAME_LEN];
 
-	u_char key[EVP_AEAD_MAX_KEY_LENGTH];
-	size_t key_len;
-
-	const EVP_AEAD *aead;
-
 	int was_default;
 
 	ngx_queue_t queue;
+
+	size_t len;
+	u_char key[];
 } ngx_ether_key_st;
 
 typedef struct ngx_ether_peer_st {

@@ -287,18 +287,14 @@ create_peer:
 
 static int ngx_http_ether_lua_return_key(lua_State *L, const ngx_ether_key_st *key)
 {
-	lua_createtable(L, 0, 4);
+	lua_createtable(L, 0, 3);
 
 	lua_pushliteral(L, "name");
 	lua_pushlstring(L, (const char *)key->name, SSL_TICKET_KEY_NAME_LEN);
 	lua_settable(L, -3);
 
 	lua_pushliteral(L, "key");
-	lua_pushlstring(L, (const char *)key->key, key->key_len);
-	lua_settable(L, -3);
-
-	lua_pushliteral(L, "aead");
-	lua_pushlightuserdata(L, (void *)key->aead);
+	lua_pushlstring(L, (const char *)key->key, key->len);
 	lua_settable(L, -3);
 
 	lua_pushliteral(L, "was_default");

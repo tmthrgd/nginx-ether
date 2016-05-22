@@ -25,6 +25,8 @@ static char *ngx_http_ether_ssl_merge_srv_conf(ngx_conf_t *cf, void *parent, voi
 
 static char *ngx_http_ether_ssl_set_opt_env_str(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
+static ngx_inline const EVP_AEAD *ngx_http_ether_ssl_select_aead(const ngx_ether_key_st *key);
+
 static int ngx_http_ether_ssl_session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn,
 		unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx,
 		int enc);
@@ -326,6 +328,18 @@ static char *ngx_http_ether_ssl_set_opt_env_str(ngx_conf_t *cf, ngx_command_t *c
 	return NGX_CONF_OK;
 }
 
+static ngx_inline const EVP_AEAD *ngx_http_ether_ssl_select_aead(const ngx_ether_key_st *key)
+{
+	switch (key->len*8) {
+		case 128:
+			return EVP_aead_aes_128_gcm();
+		case 256:
+			return EVP_aead_aes_256_gcm();
+		default:
+			return NULL;
+	}
+}
+
 static int ngx_http_ether_ssl_session_ticket_key_handler(ngx_ssl_conn_t *ssl_conn,
 		unsigned char *name, unsigned char *iv, EVP_CIPHER_CTX *ectx, HMAC_CTX *hctx,
 		int enc)
@@ -349,6 +363,7 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 	const ngx_connection_t *c;
 	const ngx_http_ether_ssl_srv_conf_st *conf;
 	const ngx_ether_key_st *key;
+	const EVP_AEAD *aead;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif /* NGX_DEBUG */
@@ -371,12 +386,17 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 		ngx_hex_dump(buf, (u_char *)key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 		SSL_session_reused(ssl_conn) ? "reused" : "new");
 
-	if (RAND_bytes(nonce, EVP_AEAD_nonce_length(key->aead)) != 1) {
+	aead = ngx_http_ether_ssl_select_aead(key);
+	if (!aead) {
+		ngx_log_error(NGX_LOG_EMERG, c->log, 0, "invalid key length: %d", key->len);
 		return -1;
 	}
 
-	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
-			EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
+	if (RAND_bytes(nonce, EVP_AEAD_nonce_length(aead)) != 1) {
+		return -1;
+	}
+
+	if (!EVP_AEAD_CTX_init(ctx, aead, key->key, key->len, EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
 		return -1;
 	}
 
@@ -390,6 +410,7 @@ static int ngx_http_ether_ssl_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, c
 	const ngx_connection_t *c;
 	const ngx_http_ether_ssl_srv_conf_st *conf;
 	const ngx_ether_key_st *key;
+	const EVP_AEAD *aead;
 #if NGX_DEBUG
 	u_char buf[SSL_TICKET_KEY_NAME_LEN*2];
 #endif /* NGX_DEBUG */
@@ -415,8 +436,13 @@ static int ngx_http_ether_ssl_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, c
 		ngx_hex_dump(buf, (u_char *)key->name, SSL_TICKET_KEY_NAME_LEN) - buf, buf,
 		(key == conf->peer.default_key) ? " (default)" : "");
 
-	if (!EVP_AEAD_CTX_init(ctx, key->aead, key->key, key->key_len,
-			EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
+	aead = ngx_http_ether_ssl_select_aead(key);
+	if (!aead) {
+		ngx_log_error(NGX_LOG_EMERG, c->log, 0, "invalid key length: %d", key->len);
+		return -1;
+	}
+
+	if (!EVP_AEAD_CTX_init(ctx, aead, key->key, key->len, EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
 		return -1;
 	}
 
