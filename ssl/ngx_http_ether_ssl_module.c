@@ -40,6 +40,7 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 		u_char *id, int len, int *copy);
 static void ngx_http_ether_ssl_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
 
+static void ngx_http_ether_ssl_get_session_memc_op_handler(ngx_ether_memc_op_st *op, void *data);
 static void ngx_http_ether_ssl_get_session_cleanup_handler(void *data);
 static void ngx_http_ether_ssl_get_session_timeout_handler(ngx_event_t *ev);
 
@@ -569,7 +570,7 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 			return NULL;
 		}
 
-		op->handler = ngx_ether_memc_event_op_handler;
+		op->handler = ngx_http_ether_ssl_get_session_memc_op_handler;
 		op->handler_data = c->write;
 		op->log = c->log;
 
@@ -685,6 +686,13 @@ static void ngx_http_ether_ssl_remove_session_handler(SSL_CTX *ssl, ngx_ssl_sess
 	ngx_str_null(&kv.value);
 
 	(void) ngx_ether_memc_start_operation(server, PROTOCOL_BINARY_CMD_DELETEQ, &kv, NULL);
+}
+
+static void ngx_http_ether_ssl_get_session_memc_op_handler(ngx_ether_memc_op_st *op, void *data)
+{
+	ngx_event_t *ev = data;
+
+	ngx_post_event(ev, &ngx_posted_events);
 }
 
 static void ngx_http_ether_ssl_get_session_cleanup_handler(void *data)

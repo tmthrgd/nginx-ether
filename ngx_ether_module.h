@@ -186,7 +186,6 @@ ngx_ether_memc_server_st *ngx_ether_get_memc_server(const ngx_ether_peer_st *pee
 		const ngx_str_t *key);
 
 void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data);
-void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data);
 
 ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_server_st *server,
 		protocol_binary_command cmd, const ngx_keyval_t *kv, void *data);

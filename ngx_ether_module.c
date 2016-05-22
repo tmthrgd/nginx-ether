@@ -2482,13 +2482,6 @@ void ngx_ether_memc_default_op_handler(ngx_ether_memc_op_st *op, void *data)
 	}
 }
 
-void ngx_ether_memc_event_op_handler(ngx_ether_memc_op_st *op, void *data)
-{
-	ngx_event_t *ev = data;
-
-	ngx_post_event(ev, &ngx_posted_events);
-}
-
 ngx_ether_memc_op_st *ngx_ether_memc_start_operation(ngx_ether_memc_server_st *server,
 		protocol_binary_command cmd, const ngx_keyval_t *kv, void *in_data)
 {
