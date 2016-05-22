@@ -63,14 +63,10 @@ typedef struct {
 	ngx_http_request_t *r;
 } ngx_http_ether_lua_memc_op_data_st;
 
-#define ngx_http_ether_lua_get_str(L, idx, pool, str) \
-	(str)->data = (u_char *)luaL_checklstring(L, -1, &(str)->len); \
-	(str)->data = ngx_pstrdup((pool), (str)); \
-	if (!(str)->data) { \
-		luaL_error(L, "ngx_pstrdup failed"); \
-	}
-
 static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle);
+
+static ngx_inline void ngx_http_ether_lua_get_str(lua_State *L, int idx, ngx_pool_t *pool,
+		ngx_str_t *str);
 
 static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r);
 static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data);
@@ -153,6 +149,17 @@ static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle)
 	}
 
 	return NGX_OK;
+}
+
+static ngx_inline void ngx_http_ether_lua_get_str(lua_State *L, int idx, ngx_pool_t *pool,
+		ngx_str_t *str)
+{
+	str->data = (u_char *)luaL_checklstring(L, idx, &str->len);
+
+	str->data = ngx_pstrdup(pool, str);
+	if (!str->data) {
+		luaL_error(L, "ngx_pstrdup failed");
+	}
 }
 
 static int ngx_http_ether_lua_new(lua_State *L)
