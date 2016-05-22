@@ -566,7 +566,7 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	ngx_http_ether_lua_memc_op_data_st *op_data;
 	const char *cmd_str;
 	ngx_keyval_t kv;
-	u_char *buf;
+	u_char *buf = NULL;
 	ngx_ether_memc_server_st *server;
 	ngx_ether_memc_op_st *op;
 	union {
@@ -742,16 +742,20 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 		}
 	}
 
-	buf = ngx_palloc(r->pool, NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + kv.key.len*2);
-	if (!buf) {
-		return luaL_error(L, "ngx_palloc failed");
-	}
+	if (ud->peer.memc.hex || ud->peer.memc.prefix.len) {
+		buf = ngx_palloc(r->pool, NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN + kv.key.len*2);
+		if (!buf) {
+			return luaL_error(L, "ngx_palloc failed");
+		}
 
-	ngx_ether_process_session_key_id(&ud->peer, &kv.key, buf);
+		ngx_ether_process_session_key_id(&ud->peer, &kv.key, buf);
+	}
 
 	server = ngx_ether_get_memc_server(&ud->peer, &kv.key);
 	if (!server) {
-		ngx_pfree(r->pool, buf);
+		if (buf) {
+			ngx_pfree(r->pool, buf);
+		}
 
 		lua_pushnil(L);
 		lua_pushnil(L);
@@ -761,7 +765,9 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 
 	op = ngx_ether_memc_start_operation(server, cmd, &kv, &req.base);
 
-	ngx_pfree(r->pool, buf);
+	if (buf) {
+		ngx_pfree(r->pool, buf);
+	}
 
 	if (!op) {
 		lua_pushnil(L);
