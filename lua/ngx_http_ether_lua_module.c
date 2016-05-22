@@ -887,8 +887,7 @@ static int ngx_http_ether_lua_preload(lua_State *L)
 
 static ngx_int_t ngx_http_ether_lua_inject_lua(ngx_conf_t *cf)
 {
-	if (!ngx_ether_peers.elts && ngx_array_init(&ngx_ether_peers, cf->cycle->pool, 16,
-			sizeof(ngx_ether_peer_st *)) != NGX_OK) {
+	if (ngx_array_init(&ngx_ether_peers, cf->pool, 4, sizeof(ngx_ether_peer_st *)) != NGX_OK) {
 		ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "ngx_array_init failed");
 		return NGX_ERROR;
 	}
