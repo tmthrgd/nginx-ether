@@ -612,21 +612,17 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	ud = luaL_checkudata(L, idx++, "_M");
 
 	if (cmd == (protocol_binary_command)-1) {
-		if (lua_isnumber(L, idx)) {
-			cmd = lua_tonumber(L, idx++);
-		} else {
-			cmd_str = luaL_checkstring(L, idx++);
+		cmd_str = luaL_checkstring(L, idx++);
 
 #define CHECK_RESTY_ETHER_CMD_STRS(op, name) \
-			if (ngx_strcmp(cmd_str, #name) == 0) { \
-				cmd = PROTOCOL_BINARY_CMD_##op; \
-			} else
+		if (ngx_strcmp(cmd_str, #name) == 0) { \
+			cmd = PROTOCOL_BINARY_CMD_##op; \
+		} else
 NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
-				lua_pushnil(L);
-				lua_pushnil(L);
-				lua_pushliteral(L, "unknown command");
-				return 3;
-			}
+			lua_pushnil(L);
+			lua_pushnil(L);
+			lua_pushliteral(L, "unknown command");
+			return 3;
 		}
 	}
 
