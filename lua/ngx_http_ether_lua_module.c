@@ -562,7 +562,6 @@ static void ngx_http_ether_lua_memc_op_handler(ngx_http_lua_co_ctx_t *coctx)
 
 	ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 	if (!ctx) {
-		// ngx_http_ether_lua_memc_op_cleanup(op_data);
 		return;
 	}
 
