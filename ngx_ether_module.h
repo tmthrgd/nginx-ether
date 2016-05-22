@@ -253,9 +253,9 @@ static ngx_inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st 
 	MACRO(GATQ, gatq) \
 	MACRO(GATK, gatk) \
 	MACRO(GATKQ, gatkq) \
-	MACRO(SASL_LIST_MECHS, mechs) \
-	MACRO(SASL_AUTH, auth) \
-	MACRO(SASL_STEP, step) \
+	MACRO(SASL_LIST_MECHS, sasl_list_mechs) \
+	MACRO(SASL_AUTH, sasl_auth) \
+	MACRO(SASL_STEP, sasl_step) \
 	MACRO(RGET, rget) \
 	MACRO(RSET, rset) \
 	MACRO(RSETQ, rsetq) \
