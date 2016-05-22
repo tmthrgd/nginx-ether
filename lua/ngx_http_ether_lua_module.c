@@ -178,7 +178,7 @@ static int ngx_http_ether_lua_new(lua_State *L)
 	peer = &ud->peer;
 
 #if 0
-	r = ngx_http_lua_get_req(L);
+	r = ngx_http_lua_get_request(L);
 
 	if (r && r->pool) {
 		peer->pool = r->pool;
@@ -588,7 +588,7 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 		return luaL_error(L, "attempt to pass %d arguments, but accepted 3 to 5", n);
 	}
 
-	r = ngx_http_lua_get_req(L);
+	r = ngx_http_lua_get_request(L);
 	if (!r) {
 		return luaL_error(L, "no request found");
 	}
