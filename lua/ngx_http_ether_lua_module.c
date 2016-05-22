@@ -645,9 +645,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 	}
 
 	if (n > 3) {
-		if (lua_isstring(L, idx)) {
-			kv.value.data = (u_char *)luaL_checklstring(L, idx++, &kv.value.len);
-		} else if (lua_isnumber(L, idx)) {
+		if (lua_isnumber(L, idx)) {
 			switch (cmd) {
 				case PROTOCOL_BINARY_CMD_INCREMENT:
 				case PROTOCOL_BINARY_CMD_DECREMENT:
@@ -657,6 +655,17 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 					break;
 				default:
 					return luaL_error(L, "argument 4 must be string, got: number");
+			}
+		} else if (lua_isstring(L, idx)) {
+			switch (cmd) {
+				case PROTOCOL_BINARY_CMD_INCREMENT:
+				case PROTOCOL_BINARY_CMD_DECREMENT:
+				case PROTOCOL_BINARY_CMD_INCREMENTQ:
+				case PROTOCOL_BINARY_CMD_DECREMENTQ:
+					return luaL_error(L, "argument 4 must be number, got: string");
+				default:
+					kv.value.data = (u_char *)luaL_checklstring(L, idx++, &kv.value.len);
+					break;
 			}
 		} else if (lua_istable(L, idx)) {
 			if (n > 4) {
