@@ -56,20 +56,28 @@
 
 typedef struct {
 	ngx_ether_peer_st peer;
+
+	ngx_msec_t memc_timeout;
 } ngx_http_ether_lua_userdata_st;
 
 typedef struct {
 	ngx_ether_memc_op_st *op;
+
 	ngx_http_request_t *r;
+
+	ngx_event_t ev;
 } ngx_http_ether_lua_memc_op_data_st;
 
 static ngx_int_t ngx_http_ether_lua_init_process(ngx_cycle_t *cycle);
 
 static ngx_inline void ngx_http_ether_lua_get_str(lua_State *L, int idx, ngx_pool_t *pool,
 		ngx_str_t *str);
+static ngx_inline ngx_msec_t ngx_http_ether_lua_get_msec(lua_State *L, int idx);
 
 static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r);
+static void ngx_http_ether_lua_memc_op_handler(ngx_http_lua_co_ctx_t *coctx);
 static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data);
+static void ngx_http_ether_lua_timeout_handler(ngx_event_t *ev);
 static void ngx_http_ether_lua_memc_op_cleanup(void *data);
 
 static int ngx_http_ether_lua_new(lua_State *L);
@@ -162,6 +170,18 @@ static ngx_inline void ngx_http_ether_lua_get_str(lua_State *L, int idx, ngx_poo
 	}
 }
 
+static ngx_inline ngx_msec_t ngx_http_ether_lua_get_msec(lua_State *L, int idx)
+{
+	ngx_str_t value;
+
+	if (lua_isnumber(L, idx)) {
+		return lua_tonumber(L, idx);
+	}
+
+	value.data = (u_char *)luaL_checklstring(L, idx, &value.len);
+	return ngx_parse_time(&value, 0);
+}
+
 static int ngx_http_ether_lua_new(lua_State *L)
 {
 	int n;
@@ -181,6 +201,8 @@ static int ngx_http_ether_lua_new(lua_State *L)
 
 	luaL_getmetatable(L, "_M");
 	lua_setmetatable(L, -2);
+
+	ud->memc_timeout = 250;
 
 	peer = &ud->peer;
 
@@ -247,6 +269,18 @@ static int ngx_http_ether_lua_new(lua_State *L)
 		lua_getfield(L, -1, "prefix");
 		if (!lua_isnoneornil(L, -1)) {
 			ngx_http_ether_lua_get_str(L, -1, peer->pool, &peer->memc.prefix);
+		}
+		lua_pop(L, 1);
+
+		lua_getfield(L, -1, "timeout");
+		if (!lua_isnoneornil(L, -1)) {
+			ud->memc_timeout = ngx_http_ether_lua_get_msec(L, -1);
+			if (ud->memc_timeout == (ngx_msec_t)NGX_ERROR) {
+				lua_pop(L, 3);
+				lua_pushnil(L);
+				lua_pushliteral(L, "invalid timeout value");
+				return 2;
+			}
 		}
 		lua_pop(L, 1);
 	}
@@ -405,8 +439,6 @@ static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r)
 	L = coctx->co;
 
 	rc = ngx_ether_memc_complete_operation(op, &value, &res.base);
-	assert(rc != NGX_AGAIN);
-
 	if (rc == NGX_OK) {
 		switch (res.base.message.header.response.opcode) {
 			case PROTOCOL_BINARY_CMD_INCREMENT:
@@ -438,6 +470,14 @@ static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r)
 		}
 
 		nret = 2;
+	} else if (rc == NGX_AGAIN) {
+		assert(op_data->ev.timedout);
+
+		lua_pushnil(L);
+		lua_pushnil(L);
+		lua_pushliteral(L, "timed out");
+
+		nret = 3;
 	} else {
 		/* rc == NGX_ERROR */
 		lua_pushnil(L);
@@ -510,11 +550,10 @@ static ngx_int_t ngx_http_ether_lua_memc_resume(ngx_http_request_t *r)
 	return rc;
 }
 
-static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data)
+static void ngx_http_ether_lua_memc_op_handler(ngx_http_lua_co_ctx_t *coctx)
 {
 	ngx_http_lua_ctx_t *ctx;
 	ngx_http_log_ctx_t *log_ctx;
-	ngx_http_lua_co_ctx_t *coctx = data;
 	ngx_http_ether_lua_memc_op_data_st *op_data;
 	ngx_http_request_t *r;
 	ngx_connection_t *c;
@@ -526,10 +565,6 @@ static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data
 	ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 	if (!ctx) {
 		// ngx_http_ether_lua_memc_op_cleanup(op_data);
-		return;
-	}
-
-	if (ngx_ether_memc_peak_operation(op) == NGX_AGAIN) {
 		return;
 	}
 
@@ -551,6 +586,18 @@ static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data
 	ngx_http_run_posted_requests(c);
 }
 
+static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data)
+{
+	if (ngx_ether_memc_peak_operation(op) != NGX_AGAIN) {
+		ngx_http_ether_lua_memc_op_handler(data);
+	}
+}
+
+static void ngx_http_ether_lua_timeout_handler(ngx_event_t *ev)
+{
+	ngx_http_ether_lua_memc_op_handler(ev->data);
+}
+
 static void ngx_http_ether_lua_memc_op_cleanup(void *data)
 {
 	ngx_http_ether_lua_memc_op_data_st *op_data = data;
@@ -558,6 +605,10 @@ static void ngx_http_ether_lua_memc_op_cleanup(void *data)
 	if (op_data->op) {
 		ngx_ether_memc_cleanup_operation(op_data->op);
 		op_data->op = NULL;
+	}
+
+	if (op_data->ev.timer_set) {
+		ngx_del_timer(&op_data->ev);
 	}
 }
 
@@ -583,6 +634,7 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 		protocol_binary_request_touch touch;
 		protocol_binary_request_gat gat;
 	} req;
+	ngx_msec_t timeout;
 
 	n = lua_gettop(L);
 
@@ -616,6 +668,7 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	}
 
 	ud = luaL_checkudata(L, idx++, "_M");
+	timeout = ud->memc_timeout;
 
 	if (cmd == (protocol_binary_command)-1) {
 		cmd_str = luaL_checklstring(L, idx++, &cmd_str_len);
@@ -697,6 +750,18 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 	}
 
 	if (req_idx != -1) {
+		lua_getfield(L, req_idx, "timeout");
+		if (!lua_isnoneornil(L, -1)) {
+			timeout = ngx_http_ether_lua_get_msec(L, -1);
+			if (timeout == (ngx_msec_t)NGX_ERROR) {
+				lua_pushnil(L);
+				lua_pushnil(L);
+				lua_pushliteral(L, "invalid timeout value");
+				return 3;
+			}
+		}
+		lua_pop(L, 1);
+
 		switch (cmd) {
 			case PROTOCOL_BINARY_CMD_INCREMENT:
 			case PROTOCOL_BINARY_CMD_DECREMENT:
@@ -840,6 +905,14 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 	ngx_http_lua_cleanup_pending_operation(coctx);
 	coctx->cleanup = ngx_http_ether_lua_memc_op_cleanup;
 	coctx->data = op_data;
+
+	if (timeout > 0) {
+		op_data->ev.handler = ngx_http_ether_lua_timeout_handler;
+		op_data->ev.data = coctx;
+		op_data->ev.log = op->log;
+
+		ngx_add_timer(&op_data->ev, timeout);
+	}
 
 	return lua_yield(L, 0);
 }
