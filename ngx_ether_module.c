@@ -1567,9 +1567,7 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
 	size_t i, j, num, len;
-	ngx_int_t event;
 	ngx_event_t *rev, *wev;
-	ngx_socket_t s;
 	ngx_connection_t *sc = NULL;
 	ngx_peer_connection_t pc;
 	ngx_ether_memc_op_st *op;
@@ -1853,7 +1851,15 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 		was_udp = server->udp;
 		server->udp = is_udp;
 
-		if (!insert_member) {
+		if (insert_member) {
+			server->name.len = name.via.str.size;
+			server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
+			if (!server->name.data) {
+				goto error;
+			}
+
+			*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
+		} else {
 			if (was_udp && is_udp) {
 				if (connect(server->c->fd, &server->addr, server->addr_len) == -1) {
 					ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
@@ -1867,60 +1873,31 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 			ngx_close_connection(server->c);
 		}
 
+		ngx_memzero(&pc, sizeof(ngx_peer_connection_t));
+
+		pc.sockaddr = &server->addr;
+		pc.socklen = server->addr_len;
+		pc.name = &server->name;
+
 		if (is_udp) {
-			s = ngx_socket(server->addr.sa_family, SOCK_DGRAM, 0);
-			ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "UDP socket %d", s);
-			if (s == (ngx_socket_t)-1) {
-				ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-					ngx_socket_n " failed");
-				goto error;
-			}
-
-			sc = ngx_get_connection(s, c->log);
-			if (!sc) {
-				if (ngx_close_socket(s) == -1) {
-					ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-						ngx_close_socket_n "failed");
-				}
-
-				goto error;
-			}
-
-			if (ngx_nonblocking(s) == -1) {
-				ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno,
-					ngx_nonblocking_n " failed");
-				goto error;
-			}
-		} else {
-			ngx_memzero(&pc, sizeof(ngx_peer_connection_t));
-
-			pc.sockaddr = &server->addr;
-			pc.socklen = server->addr_len;
-			pc.name = &server->name;
-
-			pc.get = ngx_event_get_peer;
-			pc.log = c->log;
-			pc.log_error = NGX_ERROR_ERR;
-
-			rc = ngx_event_connect_peer(&pc);
-			if (rc == NGX_ERROR || rc == NGX_DECLINED) {
-				ngx_log_error(NGX_LOG_EMERG, c->log, 0,
-					"ngx_event_connect_peer failed");
-				goto error;
-			}
-
-			sc = pc.connection;
+			pc.type = SOCK_DGRAM;
 		}
+
+		pc.get = ngx_event_get_peer;
+		pc.log = c->log;
+		pc.log_error = NGX_ERROR_ERR;
+
+		rc = ngx_event_connect_peer(&pc);
+		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
+			ngx_log_error(NGX_LOG_EMERG, c->log, 0,
+				"ngx_event_connect_peer failed");
+			goto error;
+		}
+
+		sc = pc.connection;
 
 		server->c = sc;
 		sc->data = server;
-
-		if (is_udp) {
-			sc->recv = ngx_udp_recv;
-			sc->send = ngx_send;
-			sc->recv_chain = ngx_recv_chain;
-			sc->send_chain = ngx_send_chain;
-		}
 
 		rev = sc->read;
 		wev = sc->write;
@@ -1929,28 +1906,6 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 		rev->log = sc->log;
 		wev->log = sc->log;
 		sc->pool = c->pool;
-
-		if (is_udp) {
-			sc->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
-
-			if (connect(s, &server->addr, server->addr_len) == -1) {
-				ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
-					"connect() failed");
-				goto error;
-			}
-
-			/* UDP sockets are always ready to write */
-			wev->ready = 1;
-
-			event = (ngx_event_flags & NGX_USE_CLEAR_EVENT) ?
-					/* kqueue, epoll */                 NGX_CLEAR_EVENT:
-					/* select, poll, /dev/poll */       NGX_LEVEL_EVENT;
-					/* eventport event type has no meaning: oneshot only */
-
-			if (ngx_add_event(rev, NGX_READ_EVENT, event) != NGX_OK) {
-				goto error;
-			}
-		}
 
 		rev->handler = ngx_ether_memc_read_handler;
 		wev->handler = ngx_ether_memc_write_handler;
@@ -1966,14 +1921,6 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 		ngx_queue_init(&server->send_ops);
 
 		ngx_atomic_fetch_add(&server->id, 1); /* skip 0 */
-
-		server->name.len = name.via.str.size;
-		server->name.data = ngx_palloc(c->pool, name.via.str.size + 1);
-		if (!server->name.data) {
-			goto error;
-		}
-
-		*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 
 		server->pool = c->pool;
 		server->log = c->log;
