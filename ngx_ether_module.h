@@ -50,7 +50,7 @@ typedef struct ngx_ether_memc_server_st {
 	ngx_pool_t *pool;
 	ngx_log_t *log;
 
-	ngx_connection_t *c;
+	ngx_peer_connection_t pc;
 
 	ngx_atomic_uint_t id;
 

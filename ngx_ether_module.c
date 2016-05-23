@@ -272,7 +272,6 @@ void ngx_ether_cleanup_peer(ngx_ether_peer_st *peer)
 	ngx_ether_key_st *key;
 
 	pc = &peer->serf.pc;
-
 	c = pc->connection;
 	if (c) {
 		ngx_close_connection(c);
@@ -284,7 +283,12 @@ void ngx_ether_cleanup_peer(ngx_ether_peer_st *peer)
 		q = ngx_queue_next(q)) {
 		server = ngx_queue_data(q, ngx_ether_memc_server_st, queue);
 
-		ngx_close_connection(server->c);
+		pc = &server->pc;
+		c = pc->connection;
+		if (c) {
+			ngx_close_connection(c);
+			pc->connection = NULL;
+		}
 	}
 
 	for (q = ngx_queue_head(&peer->keys);
@@ -1567,9 +1571,6 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 	u_char str_addr[NGX_SOCKADDR_STRLEN];
 	u_char str_port[sizeof("65535") - 1];
 	size_t i, j, num, len;
-	ngx_event_t *rev, *wev;
-	ngx_connection_t *sc = NULL;
-	ngx_peer_connection_t pc;
 	ngx_ether_memc_op_st *op;
 #if NGX_DEBUG
 	ngx_keyval_t kv = {ngx_null_string, ngx_null_string};
@@ -1775,7 +1776,7 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 
 				ngx_queue_remove(q);
 
-				ngx_close_connection(server->c);
+				ngx_close_connection(server->pc.connection);
 
 				for (q = ngx_queue_head(&server->recv_ops);
 					q != ngx_queue_sentinel(&server->recv_ops);
@@ -1861,7 +1862,8 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 			*ngx_cpymem(server->name.data, name.via.str.ptr, name.via.str.size) = '\0';
 		} else {
 			if (was_udp && is_udp) {
-				if (connect(server->c->fd, &server->addr, server->addr_len) == -1) {
+				if (connect(server->pc.connection->fd, &server->addr,
+						server->addr_len) == -1) {
 					ngx_log_error(NGX_LOG_CRIT, c->log, ngx_socket_errno,
 						"connect() failed");
 					goto error;
@@ -1870,48 +1872,34 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 				continue;
 			}
 
-			ngx_close_connection(server->c);
+			ngx_close_connection(server->pc.connection);
 		}
 
-		ngx_memzero(&pc, sizeof(ngx_peer_connection_t));
-
-		pc.sockaddr = &server->addr;
-		pc.socklen = server->addr_len;
-		pc.name = &server->name;
+		server->pc.sockaddr = &server->addr;
+		server->pc.socklen = server->addr_len;
+		server->pc.name = &server->name;
 
 		if (is_udp) {
-			pc.type = SOCK_DGRAM;
+			server->pc.type = SOCK_DGRAM;
 		}
 
-		pc.get = ngx_event_get_peer;
-		pc.log = c->log;
-		pc.log_error = NGX_ERROR_ERR;
+		server->pc.get = ngx_event_get_peer;
+		server->pc.log = c->log;
+		server->pc.log_error = NGX_ERROR_ERR;
 
-		rc = ngx_event_connect_peer(&pc);
+		rc = ngx_event_connect_peer(&server->pc);
 		if (rc == NGX_ERROR || rc == NGX_DECLINED) {
 			ngx_log_error(NGX_LOG_EMERG, c->log, 0,
 				"ngx_event_connect_peer failed");
 			goto error;
 		}
 
-		sc = pc.connection;
+		server->pc.connection->data = server;
 
-		server->c = sc;
-		sc->data = server;
+		server->pc.connection->pool = c->pool;
 
-		rev = sc->read;
-		wev = sc->write;
-
-		sc->log = c->log;
-		rev->log = sc->log;
-		wev->log = sc->log;
-		sc->pool = c->pool;
-
-		rev->handler = ngx_ether_memc_read_handler;
-		wev->handler = ngx_ether_memc_write_handler;
-
-		/* don't close the socket on error if we've gotten this far */
-		sc = NULL;
+		server->pc.connection->read->handler = ngx_ether_memc_read_handler;
+		server->pc.connection->write->handler = ngx_ether_memc_write_handler;
 
 		if (!insert_member) {
 			continue;
@@ -2043,10 +2031,6 @@ static ngx_int_t ngx_ether_handle_member_resp_body(ngx_connection_t *c, ngx_ethe
 	return NGX_OK;
 
 error:
-	if (sc) {
-		ngx_close_connection(sc);
-	}
-
 	if (have_changed) {
 		peer->memc.npoints = 0;
 
@@ -2720,7 +2704,7 @@ NGX_ETHER_FOREACH_MEMC_OP(NGX_ETHER_MEMC_START_OP_DEBUG_STR)
 	op->send.last = data + len;
 	op->send.end = data + len;
 
-	op->log = server->c->log;
+	op->log = server->log;
 
 	if (!is_quiet) {
 		ngx_queue_insert_tail(&server->recv_ops, &op->recv_queue);
@@ -2728,7 +2712,7 @@ NGX_ETHER_FOREACH_MEMC_OP(NGX_ETHER_MEMC_START_OP_DEBUG_STR)
 
 	ngx_queue_insert_tail(&server->send_ops, &op->send_queue);
 
-	server->c->write->handler(server->c->write);
+	server->pc.connection->write->handler(server->pc.connection->write);
 
 	return op;
 
