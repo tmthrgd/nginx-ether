@@ -15,7 +15,7 @@ typedef struct {
 
 typedef struct {
 	ngx_ether_memc_op_st *op;
-	ngx_event_t *ev;
+	ngx_event_t ev;
 } ngx_http_ether_ssl_get_session_cleanup_st;
 
 static ngx_int_t ngx_http_ether_ssl_init_process(ngx_cycle_t *cycle);
@@ -584,15 +584,12 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 		cln->handler = ngx_http_ether_ssl_get_session_cleanup_handler;
 
 		cln_data = cln->data;
+		ngx_memzero(cln_data, sizeof(ngx_http_ether_ssl_get_session_cleanup_st));
+
 		cln_data->op = op;
-		cln_data->ev = NULL;
 
 		if (conf->memc_timeout > 0) {
-			ev = ngx_pcalloc(c->pool, sizeof(ngx_event_t));
-			if (!ev) {
-				return NULL;
-			}
-			cln_data->ev = ev;
+			ev = &cln_data->ev;
 
 			ev->handler = ngx_http_ether_ssl_get_session_timeout_handler;
 			ev->data = c->write;
@@ -701,8 +698,8 @@ static void ngx_http_ether_ssl_get_session_cleanup_handler(void *data)
 
 	ngx_ether_memc_cleanup_operation(cln->op);
 
-	if (cln->ev && cln->ev->timer_set) {
-		ngx_del_timer(cln->ev);
+	if (cln->ev.timer_set) {
+		ngx_del_timer(&cln->ev);
 	}
 }
 
