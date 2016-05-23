@@ -585,9 +585,20 @@ static void ngx_http_ether_lua_memc_op_handler(ngx_http_lua_co_ctx_t *coctx)
 
 static void ngx_http_ether_lua_memc_handler(ngx_ether_memc_op_st *op, void *data)
 {
-	if (ngx_ether_memc_peak_operation(op) != NGX_AGAIN) {
-		ngx_http_ether_lua_memc_op_handler(data);
+	ngx_http_lua_co_ctx_t *coctx = data;
+	ngx_http_ether_lua_memc_op_data_st *op_data;
+
+	if (ngx_ether_memc_peak_operation(op) == NGX_AGAIN) {
+		return;
 	}
+
+	op_data = coctx->data;
+
+	if (op_data->ev.timer_set) {
+		ngx_del_timer(&op_data->ev);
+	}
+
+	ngx_http_ether_lua_memc_op_handler(data);
 }
 
 static void ngx_http_ether_lua_timeout_handler(ngx_event_t *ev)
