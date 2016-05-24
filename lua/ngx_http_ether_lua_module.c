@@ -731,7 +731,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 					return luaL_error(L,
 						"argument 4 must be number, got: string");
 				default:
-					kv.value.data = (u_char *)luaL_checklstring(L, idx++,
+					kv.value.data = (u_char *)lua_tolstring(L, idx++,
 							&kv.value.len);
 					break;
 			}
