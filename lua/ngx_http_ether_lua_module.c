@@ -841,7 +841,7 @@ NGX_ETHER_FOREACH_RESTY_MEMC_OP(CHECK_RESTY_ETHER_CMD_STRS) {
 			return luaL_error(L, "ngx_palloc failed");
 		}
 
-		ngx_ether_format_memc_key_id(&ud->peer, &kv.key, buf);
+		ngx_ether_format_memc_key(&ud->peer, &kv.key, buf);
 	}
 
 	server = ngx_ether_get_memc_server(&ud->peer, &kv.key);

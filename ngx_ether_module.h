@@ -195,8 +195,8 @@ ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op, ngx_
 void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op);
 
 /* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes */
-static ngx_inline void ngx_ether_format_memc_key_id(const ngx_ether_peer_st *peer,
-		ngx_str_t *key, u_char *buf)
+static ngx_inline void ngx_ether_format_memc_key(const ngx_ether_peer_st *peer, ngx_str_t *key,
+		u_char *buf)
 {
 	u_char *p;
 
