@@ -482,7 +482,8 @@ static int ngx_http_ether_ssl_new_session_handler(ngx_ssl_conn_t *ssl_conn,
 	kv.key.data = key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	kv.key.len = key.len = len;
 
-	ngx_ether_process_session_key_id(&conf->peer, &kv.key, buf);
+	ngx_ether_format_memc_key_id(&conf->peer, &kv.key, buf);
+
 	server = ngx_ether_get_memc_server(&conf->peer, &kv.key);
 	if (!server) {
 		return 0;
@@ -557,7 +558,8 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 		kv.key.data = id;
 		kv.key.len = len;
 
-		ngx_ether_process_session_key_id(&conf->peer, &kv.key, buf);
+		ngx_ether_format_memc_key_id(&conf->peer, &kv.key, buf);
+
 		server = ngx_ether_get_memc_server(&conf->peer, &kv.key);
 		if (!server) {
 			return NULL;
@@ -674,7 +676,8 @@ static void ngx_http_ether_ssl_remove_session_handler(SSL_CTX *ssl, ngx_ssl_sess
 	kv.key.data = (u_char *)SSL_SESSION_get_id(sess, &len);
 	kv.key.len = len;
 
-	ngx_ether_process_session_key_id(&conf->peer, &kv.key, buf);
+	ngx_ether_format_memc_key_id(&conf->peer, &kv.key, buf);
+
 	server = ngx_ether_get_memc_server(&conf->peer, &kv.key);
 	if (!server) {
 		return;

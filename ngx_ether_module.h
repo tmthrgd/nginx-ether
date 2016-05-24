@@ -194,9 +194,8 @@ ngx_int_t ngx_ether_memc_complete_operation(const ngx_ether_memc_op_st *op, ngx_
 		void *data);
 void ngx_ether_memc_cleanup_operation(ngx_ether_memc_op_st *op);
 
-/* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes
- * buf should be MEMC_MAX_KEY_PREFIX_LEN + SSL_MAX_SSL_SESSION_ID_LENGTH*2 bytes */
-static ngx_inline void ngx_ether_process_session_key_id(const ngx_ether_peer_st *peer,
+/* buf must be atleast peer->memc.prefix.len + key->len*(peer->memc.hex ? 2 : 1) bytes */
+static ngx_inline void ngx_ether_format_memc_key_id(const ngx_ether_peer_st *peer,
 		ngx_str_t *key, u_char *buf)
 {
 	u_char *p;
