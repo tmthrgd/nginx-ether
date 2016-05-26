@@ -645,13 +645,16 @@ static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command 
 	ngx_msec_t timeout;
 
 	n = lua_gettop(L);
-
 	if (cmd != (protocol_binary_command)-1) {
-		n++;
-	}
+		if (n < 2 || n > 4) {
+			return luaL_error(L, "attempt to pass %d arguments, but accepted 2 to 4", n);
+		}
 
-	if (n < 3 || n > 5) {
-		return luaL_error(L, "attempt to pass %d arguments, but accepted 3 to 5", n);
+		n++;
+	} else {
+		if (n < 3 || n > 5) {
+			return luaL_error(L, "attempt to pass %d arguments, but accepted 3 to 5", n);
+		}
 	}
 
 	r = ngx_http_lua_get_request(L);
