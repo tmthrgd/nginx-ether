@@ -2571,11 +2571,9 @@ NGX_ETHER_FOREACH_MEMC_OP(NGX_ETHER_MEMC_START_OP_DEBUG_STR)
 	p = data;
 	ngx_memzero(p, hdr_len);
 
-	id = ngx_atomic_fetch_add(&server->id, 1);
-	if (!id) {
-		/* skip 0 */
+	do {
 		id = ngx_atomic_fetch_add(&server->id, 1);
-	}
+	} while (!id);
 
 	if (server->udp) {
 		// data[0..1] = request id
