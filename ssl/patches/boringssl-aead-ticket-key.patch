@@ -1,7 +1,7 @@
 diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
---- a/include/openssl/ssl.h	2016-07-04 14:12:38.000000000 +0930
-+++ b/include/openssl/ssl.h	2016-07-04 15:31:19.000474508 +0930
-@@ -1804,7 +1804,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+--- a/include/openssl/ssl.h	2016-08-16 21:40:08.000000000 +0930
++++ b/include/openssl/ssl.h	2016-08-16 21:42:40.438365809 +0930
+@@ -1879,7 +1879,10 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
   * In both modes, |ctx| and |hmac_ctx| will already have been initialized with
   * |EVP_CIPHER_CTX_init| and |HMAC_CTX_init|, respectively. |callback|
   * configures |hmac_ctx| with an HMAC digest and key, and configures |ctx|
@@ -13,7 +13,7 @@ diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
   *
   * When encrypting a new ticket, |encrypt| will be one. It writes a public
   * 16-byte key name to |key_name| and a fresh IV to |iv|. The output IV length
-@@ -1824,6 +1827,17 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
+@@ -1899,6 +1902,17 @@ OPENSSL_EXPORT int SSL_CTX_set_tlsext_ti
      SSL_CTX *ctx, int (*callback)(SSL *ssl, uint8_t *key_name, uint8_t *iv,
                                    EVP_CIPHER_CTX *ctx, HMAC_CTX *hmac_ctx,
                                    int encrypt));
@@ -31,42 +31,63 @@ diff -rupN a/include/openssl/ssl.h b/include/openssl/ssl.h
  
  
  /* Elliptic curve Diffie-Hellman.
-diff -rupN a/ssl/handshake_server.c b/ssl/handshake_server.c
---- a/ssl/handshake_server.c	2016-07-04 14:12:38.000000000 +0930
-+++ b/ssl/handshake_server.c	2016-07-04 15:54:48.536452636 +0930
-@@ -2134,8 +2134,10 @@ static int ssl3_send_new_session_ticket(
+diff -rupN a/ssl/ssl_lib.c b/ssl/ssl_lib.c
+--- a/ssl/ssl_lib.c	2016-08-16 21:40:08.000000000 +0930
++++ b/ssl/ssl_lib.c	2016-08-16 21:42:40.446365809 +0930
+@@ -163,6 +163,11 @@
+ #endif
+ 
+ 
++/* The address of this is a magic value, a pointer to which is returned by
++ * SSL_magic_tlsext_ticket_key_cb_aead_ptr(). It indicated that AEAD mode is
++ * being used. */
++static const char g_tlsext_ticket_cb_aead_magic = 0;
++
+ /* |SSL_R_UNKNOWN_PROTOCOL| is no longer emitted, but continue to define it
+  * to avoid downstream churn. */
+ OPENSSL_DECLARE_ERROR_REASON(SSL, UNKNOWN_PROTOCOL)
+@@ -1458,6 +1463,10 @@ int SSL_CTX_set_tlsext_ticket_key_cb(
+   return 1;
+ }
+ 
++HMAC_CTX *SSL_magic_tlsext_ticket_key_cb_aead_ptr(void) {
++  return (HMAC_CTX *)&g_tlsext_ticket_cb_aead_magic;
++}
++
+ int SSL_CTX_set1_curves(SSL_CTX *ctx, const int *curves, size_t curves_len) {
+   return tls1_set_curves(&ctx->supported_group_list,
+                          &ctx->supported_group_list_len, curves,
+diff -rupN a/ssl/ssl_session.c b/ssl/ssl_session.c
+--- a/ssl/ssl_session.c	2016-08-16 21:40:08.000000000 +0930
++++ b/ssl/ssl_session.c	2016-08-16 21:54:14.142368037 +0930
+@@ -491,11 +491,16 @@ int ssl_encrypt_ticket(SSL *ssl, CBB *ou
    EVP_CIPHER_CTX_init(&ctx);
    HMAC_CTX hctx;
    HMAC_CTX_init(&hctx);
 +  EVP_AEAD_CTX aead_ctx;
 +  EVP_AEAD_CTX_zero(&aead_ctx);
  
--  int ret = -1;
-+  int ret = -1, is_aead = 0;
-   CBB cbb, body, ticket;
-   if (!ssl->method->init_message(ssl, &cbb, &body, SSL3_MT_NEW_SESSION_TICKET) ||
-       /* Ticket lifetime hint (advisory only): We leave this unspecified for
-@@ -2148,8 +2150,11 @@ static int ssl3_send_new_session_ticket(
- 
    /* If the session is too long, emit a dummy value rather than abort the
     * connection. */
--  const size_t max_ticket_overhead =
+-  static const size_t kMaxTicketOverhead =
 -      16 + EVP_MAX_IV_LENGTH + EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE;
-+  const size_t max_ticket_overhead = 16 +
++  static const size_t kMaxTicketOverhead = 16 +
 +      (EVP_MAX_IV_LENGTH < EVP_AEAD_MAX_NONCE_LENGTH
 +          ? EVP_AEAD_MAX_NONCE_LENGTH : EVP_MAX_IV_LENGTH) +
 +      ((EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE) < EVP_AEAD_MAX_OVERHEAD
 +          ? EVP_AEAD_MAX_OVERHEAD : EVP_MAX_BLOCK_LENGTH + EVP_MAX_MD_SIZE);
-   if (session_len > 0xffff - max_ticket_overhead) {
+   if (session_len > 0xffff - kMaxTicketOverhead) {
      static const char kTicketPlaceholder[] = "TICKET TOO LARGE";
- 
-@@ -2167,11 +2172,20 @@ static int ssl3_send_new_session_ticket(
+     if (CBB_add_bytes(out, (const uint8_t *)kTicketPlaceholder,
+@@ -508,11 +513,22 @@ int ssl_encrypt_ticket(SSL *ssl, CBB *ou
    /* Initialize HMAC and cipher contexts. If callback present it does all the
     * work otherwise use generated values from parent ctx. */
    SSL_CTX *tctx = ssl->initial_ctx;
 -  uint8_t iv[EVP_MAX_IV_LENGTH];
-+  uint8_t iv[EVP_MAX_IV_LENGTH < EVP_AEAD_MAX_NONCE_LENGTH ? EVP_AEAD_MAX_NONCE_LENGTH : EVP_MAX_IV_LENGTH];
++  uint8_t iv[EVP_MAX_IV_LENGTH < EVP_AEAD_MAX_NONCE_LENGTH
++      ? EVP_AEAD_MAX_NONCE_LENGTH : EVP_MAX_IV_LENGTH];
    uint8_t key_name[16];
++  int is_aead = 0;
    if (tctx->tlsext_ticket_key_cb != NULL) {
 -    if (tctx->tlsext_ticket_key_cb(ssl, key_name, iv, &ctx, &hctx,
 -                                   1 /* encrypt */) < 0) {
@@ -84,13 +105,13 @@ diff -rupN a/ssl/handshake_server.c b/ssl/handshake_server.c
        goto err;
      }
    } else {
-@@ -2186,8 +2200,28 @@ static int ssl3_send_new_session_ticket(
+@@ -527,8 +543,28 @@ int ssl_encrypt_ticket(SSL *ssl, CBB *ou
    }
  
    uint8_t *ptr;
--  if (!CBB_add_bytes(&ticket, key_name, 16) ||
--      !CBB_add_bytes(&ticket, iv, EVP_CIPHER_CTX_iv_length(&ctx)) ||
-+  if (!CBB_add_bytes(&ticket, key_name, 16)) {
+-  if (!CBB_add_bytes(out, key_name, 16) ||
+-      !CBB_add_bytes(out, iv, EVP_CIPHER_CTX_iv_length(&ctx)) ||
++  if (!CBB_add_bytes(out, key_name, 16)) {
 +    goto err;
 +  }
 +
@@ -99,75 +120,34 @@ diff -rupN a/ssl/handshake_server.c b/ssl/handshake_server.c
 +    const size_t nonce_len = EVP_AEAD_nonce_length(aead_ctx.aead);
 +    const size_t max_overhead = EVP_AEAD_max_overhead(aead_ctx.aead);
 +
-+    if (!CBB_add_bytes(&ticket, iv, nonce_len) ||
-+        !CBB_reserve(&ticket, &ptr, session_len + max_overhead) ||
-+        !EVP_AEAD_CTX_seal(&aead_ctx,
++    if (CBB_add_bytes(out, iv, nonce_len) &&
++        CBB_reserve(out, &ptr, session_len + max_overhead) &&
++        EVP_AEAD_CTX_seal(&aead_ctx,
 +                           ptr, &out_len, session_len + max_overhead,
-+                           iv, nonce_len, session, session_len, NULL, 0) ||
-+        !CBB_did_write(&ticket, out_len)) {
-+       goto err;
++                           iv, nonce_len, session_buf, session_len, NULL, 0) &&
++        CBB_did_write(out, out_len)) {
++       ret = 1;
 +    }
 +
-+    goto done;
-+  }
-+
-+  if (!CBB_add_bytes(&ticket, iv, EVP_CIPHER_CTX_iv_length(&ctx)) ||
-       !CBB_reserve(&ticket, &ptr, session_len + EVP_MAX_BLOCK_LENGTH)) {
-     goto err;
-   }
-@@ -2210,8 +2244,12 @@ static int ssl3_send_new_session_ticket(
-   if (!HMAC_Update(&hctx, CBB_data(&ticket), CBB_len(&ticket)) ||
-       !CBB_reserve(&ticket, &ptr, EVP_MAX_MD_SIZE) ||
-       !HMAC_Final(&hctx, ptr, &hlen) ||
--      !CBB_did_write(&ticket, hlen) ||
--      !ssl->method->finish_message(ssl, &cbb)) {
-+      !CBB_did_write(&ticket, hlen)) {
 +    goto err;
 +  }
 +
-+done:
-+  if (!ssl->method->finish_message(ssl, &cbb)) {
++  if (!CBB_add_bytes(out, iv, EVP_CIPHER_CTX_iv_length(&ctx)) ||
+       !CBB_reserve(out, &ptr, session_len + EVP_MAX_BLOCK_LENGTH)) {
      goto err;
    }
- 
-@@ -2220,6 +2258,7 @@ static int ssl3_send_new_session_ticket(
+@@ -559,6 +595,7 @@ int ssl_encrypt_ticket(SSL *ssl, CBB *ou
  
  err:
-   OPENSSL_free(session);
+   OPENSSL_free(session_buf);
 +  EVP_AEAD_CTX_cleanup(&aead_ctx);
    EVP_CIPHER_CTX_cleanup(&ctx);
    HMAC_CTX_cleanup(&hctx);
    return ret;
-diff -rupN a/ssl/ssl_lib.c b/ssl/ssl_lib.c
---- a/ssl/ssl_lib.c	2016-07-04 14:12:38.000000000 +0930
-+++ b/ssl/ssl_lib.c	2016-07-04 15:32:06.016473779 +0930
-@@ -156,6 +156,11 @@
- #include "../crypto/internal.h"
- 
- 
-+/* The address of this is a magic value, a pointer to which is returned by
-+ * SSL_magic_tlsext_ticket_key_cb_aead_ptr(). It indicated that AEAD mode is
-+ * being used. */
-+static const char g_tlsext_ticket_cb_aead_magic = 0;
-+
- /* |SSL_R_UNKNOWN_PROTOCOL| is no longer emitted, but continue to define it
-  * to avoid downstream churn. */
- OPENSSL_DECLARE_ERROR_REASON(SSL, UNKNOWN_PROTOCOL)
-@@ -1338,6 +1343,10 @@ int SSL_CTX_set_tlsext_ticket_key_cb(
-   return 1;
- }
- 
-+HMAC_CTX *SSL_magic_tlsext_ticket_key_cb_aead_ptr(void) {
-+  return (HMAC_CTX *)&g_tlsext_ticket_cb_aead_magic;
-+}
-+
- int SSL_CTX_set1_curves(SSL_CTX *ctx, const int *curves, size_t curves_len) {
-   return tls1_set_curves(&ctx->supported_group_list,
-                          &ctx->supported_group_list_len, curves,
 diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
---- a/ssl/t1_lib.c	2016-07-04 14:12:38.000000000 +0930
-+++ b/ssl/t1_lib.c	2016-07-04 15:47:06.288459809 +0930
-@@ -2411,6 +2411,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+--- a/ssl/t1_lib.c	2016-08-16 21:40:08.000000000 +0930
++++ b/ssl/t1_lib.c	2016-08-16 21:42:40.446365809 +0930
+@@ -2775,6 +2775,7 @@ int tls_process_ticket(SSL *ssl, SSL_SES
                         size_t ticket_len, const uint8_t *session_id,
                         size_t session_id_len) {
    int ret = 1; /* Most errors are non-fatal. */
@@ -175,7 +155,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
    SSL_CTX *ssl_ctx = ssl->initial_ctx;
    uint8_t *plaintext = NULL;
  
-@@ -2418,6 +2419,8 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2782,6 +2783,8 @@ int tls_process_ticket(SSL *ssl, SSL_SES
    HMAC_CTX_init(&hmac_ctx);
    EVP_CIPHER_CTX cipher_ctx;
    EVP_CIPHER_CTX_init(&cipher_ctx);
@@ -184,7 +164,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
  
    *out_renew_ticket = 0;
    *out_session = NULL;
-@@ -2439,6 +2442,14 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2803,6 +2806,14 @@ int tls_process_ticket(SSL *ssl, SSL_SES
      int cb_ret = ssl_ctx->tlsext_ticket_key_cb(
          ssl, (uint8_t *)ticket /* name */, (uint8_t *)iv, &cipher_ctx,
          &hmac_ctx, 0 /* decrypt */);
@@ -199,7 +179,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
      if (cb_ret < 0) {
        ret = 0;
        goto done;
-@@ -2464,6 +2475,44 @@ int tls_process_ticket(SSL *ssl, SSL_SES
+@@ -2828,6 +2839,44 @@ int tls_process_ticket(SSL *ssl, SSL_SES
        goto done;
      }
    }
@@ -244,7 +224,7 @@ diff -rupN a/ssl/t1_lib.c b/ssl/t1_lib.c
    size_t iv_len = EVP_CIPHER_CTX_iv_length(&cipher_ctx);
  
    /* Check the MAC at the end of the ticket. */
-@@ -2517,6 +2566,7 @@ done:
+@@ -2881,6 +2930,7 @@ done:
    OPENSSL_free(plaintext);
    HMAC_CTX_cleanup(&hmac_ctx);
    EVP_CIPHER_CTX_cleanup(&cipher_ctx);
