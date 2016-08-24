@@ -402,7 +402,7 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 	}
 
 	ngx_memcpy(name, key->name, SSL_TICKET_KEY_NAME_LEN);
-	return 0;
+	return 1;
 }
 
 static int ngx_http_ether_ssl_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
