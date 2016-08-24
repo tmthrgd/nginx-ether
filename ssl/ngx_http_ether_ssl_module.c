@@ -35,7 +35,8 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 static int ngx_http_ether_ssl_session_ticket_key_dec(ngx_ssl_conn_t *ssl_conn, const uint8_t *name,
 		EVP_AEAD_CTX *ctx);
 
-static int ngx_http_ether_ssl_new_session_handler(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess);
+static int ngx_http_ether_ssl_new_session_handler(ngx_ssl_conn_t *ssl_conn,
+		ngx_ssl_session_t *sess);
 static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t *ssl_conn,
 		u_char *id, int len, int *copy);
 static void ngx_http_ether_ssl_remove_session_handler(SSL_CTX *ssl, ngx_ssl_session_t *sess);
@@ -188,7 +189,8 @@ static char *ngx_http_ether_ssl_merge_srv_conf(ngx_conf_t *cf, void *parent, voi
 	ngx_conf_merge_str_value(conf->peer.serf.auth, prev->peer.serf.auth, "");
 	ngx_conf_merge_value(conf->peer.memc.hex, prev->peer.memc.hex, 1);
 	ngx_conf_merge_str_value(conf->peer.serf.prefix, prev->peer.serf.prefix, "ether:");
-	ngx_conf_merge_str_value(conf->peer.memc.prefix, prev->peer.memc.prefix, "ether:ssl-session-cache:");
+	ngx_conf_merge_str_value(conf->peer.memc.prefix, prev->peer.memc.prefix,
+		"ether:ssl-session-cache:");
 	ngx_conf_merge_msec_value(conf->memc_timeout, prev->memc_timeout, 250);
 
 	if (!conf->peer.serf.address.len || ngx_strcmp(conf->peer.serf.address.data, "off") == 0) {
