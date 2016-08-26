@@ -609,16 +609,21 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 		return SSL_magic_pending_session_ptr();
 	}
 
+	ev = SSL_get_ex_data(ssl_conn, g_ssl_exdata_get_session_timeout_index);
+
 	rc = ngx_ether_memc_complete_operation(op, &value, NULL);
 
 	if (rc == NGX_AGAIN) {
-		ev = SSL_get_ex_data(ssl_conn, g_ssl_exdata_get_session_timeout_index);
 		if (ev && ev->timedout) {
 			ngx_log_error(NGX_LOG_ERR, c->log, 0, "memcached operation timedout");
 			return NULL;
 		}
 
 		return SSL_magic_pending_session_ptr();
+	}
+
+	if (ev) {
+		ngx_del_timer(ev);
 	}
 
 	if (rc == NGX_ERROR) {
