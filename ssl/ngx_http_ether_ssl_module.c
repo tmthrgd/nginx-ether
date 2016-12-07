@@ -335,9 +335,9 @@ static ngx_inline const EVP_AEAD *ngx_http_ether_ssl_select_aead(const ngx_ether
 {
 	switch (key->len*8) {
 		case 128:
-			return EVP_aead_aes_128_gcm();
+			return EVP_aead_aes_128_gcm_siv();
 		case 256:
-			return EVP_aead_aes_256_gcm();
+			return EVP_aead_aes_256_gcm_siv();
 		default:
 			return NULL;
 	}
