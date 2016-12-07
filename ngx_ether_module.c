@@ -1366,8 +1366,8 @@ static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_
 		ngx_queue_insert_tail(&peer->keys, &key->queue);
 
 	is_default_key:
-		if (default_key.via.bin.size && ngx_memcmp(ptr->via.bin.ptr, default_key.via.bin.ptr,
-				SSL_TICKET_KEY_NAME_LEN) == 0) {
+		if (!was_default && default_key.via.bin.size && ngx_memcmp(ptr->via.bin.ptr,
+				default_key.via.bin.ptr, SSL_TICKET_KEY_NAME_LEN) == 0) {
 			peer->default_key = key;
 
 			/* the next key on will all be former defaults */
