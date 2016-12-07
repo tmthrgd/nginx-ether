@@ -1304,10 +1304,12 @@ static ngx_int_t ngx_ether_handle_key_query_resp(ngx_connection_t *c, ngx_ether_
 		goto error;
 	}
 
-	ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-		"ssl session ticket key set default: \"%*s\"",
-		ngx_hex_dump(buf, (u_char *)default_key.via.bin.ptr,
-			SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+	if (default_key.via.bin.size) {
+		ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+			"ssl session ticket key set default: \"%*s\"",
+			ngx_hex_dump(buf, (u_char *)default_key.via.bin.ptr,
+				SSL_TICKET_KEY_NAME_LEN) - buf, buf);
+	}
 
 	if (peer->default_key) {
 		peer->default_key->was_default = 1;
