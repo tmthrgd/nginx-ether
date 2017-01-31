@@ -1,19 +1,12 @@
 ngx_addon_name=ngx_http_ether_lua
 
-if [ -n "$ngx_module_link" ]; then
-	# nginx-1.9.11+
-	ngx_module_type=HTTP
-	ngx_module_name=ngx_http_ether_lua_module
-	ngx_module_incs="$ngx_addon_dir"
-	ngx_module_deps="$ngx_addon_dir/ngx_ether_module.h"
-	ngx_module_srcs="$ngx_addon_dir/lua/ngx_http_ether_lua_module.c"
-	ngx_module_libs=
+ngx_module_type=HTTP
+ngx_module_name=ngx_http_ether_lua_module
+ngx_module_incs="$ngx_addon_dir"
+ngx_module_deps="$ngx_addon_dir/ngx_ether_module.h"
+ngx_module_srcs="$ngx_addon_dir/lua/ngx_http_ether_lua_module.c"
+ngx_module_libs=
 
-	. auto/module
-else
-	HTTP_MODULES="$HTTP_MODULES ngx_http_ether_lua_module"
-	NGX_ADDON_DEPS="$NGX_ADDON_DEPS $ngx_addon_dir/ngx_ether_module.h"
-	NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/lua/ngx_http_ether_lua_module.c"
-fi
+. auto/module
 
 # -*- mode: shell;-*-
