@@ -386,7 +386,7 @@ static int ngx_http_ether_lua_get_key(lua_State *L)
 	key = ngx_ether_get_key(&ud->peer, name);
 	if (!key) {
 		lua_pushnil(L);
-		lua_pushliteral(L, "unkown key");
+		lua_pushliteral(L, "unknown key");
 		return 2;
 	}
 
