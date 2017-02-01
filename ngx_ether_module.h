@@ -129,6 +129,12 @@ typedef struct ngx_ether_peer_st {
 		ngx_ether_chash_point_st *points;
 	} memc;
 
+	struct {
+		//ngx_atomic_uint_t seq;
+		uint64_t seq;
+		uint64_t id;
+	} nonce;
+
 	ngx_pool_t *pool;
 	ngx_log_t *log;
 
@@ -180,6 +186,29 @@ static ngx_inline const ngx_ether_key_st *ngx_ether_get_key(const ngx_ether_peer
 	}
 
 	return NULL;
+}
+
+static ngx_inline ngx_int_t ngx_ether_get_nonce(ngx_ether_peer_st *peer, u_char *nonce, size_t len)
+{
+#pragma pack(push, 1)
+	union {
+		struct {
+			uint64_t seq;
+			uint64_t id;
+		};
+		uint8_t byte[2*sizeof(uint64_t)];
+	} new_nonce;
+#pragma pack(pop)
+
+	if (len > sizeof(new_nonce.byte)) {
+		return 0;
+	}
+
+	new_nonce.seq = ngx_atomic_fetch_add(&peer->nonce.seq, 1);
+	new_nonce.id = peer->nonce.id;
+
+	ngx_memcpy(nonce, new_nonce.byte, len);
+	return 1;
 }
 
 ngx_ether_memc_server_st *ngx_ether_get_memc_server(const ngx_ether_peer_st *peer,

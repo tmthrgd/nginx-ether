@@ -335,9 +335,9 @@ static ngx_inline const EVP_AEAD *ngx_http_ether_ssl_select_aead(const ngx_ether
 {
 	switch (key->len*8) {
 		case 128:
-			return EVP_aead_aes_128_gcm_siv();
+			return EVP_aead_aes_128_gcm();
 		case 256:
-			return EVP_aead_aes_256_gcm_siv();
+			return EVP_aead_aes_256_gcm();
 		default:
 			return NULL;
 	}
@@ -364,7 +364,7 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 		uint8_t *nonce, EVP_AEAD_CTX *ctx) {
 	const SSL_CTX *ssl_ctx;
 	const ngx_connection_t *c;
-	const ngx_http_ether_ssl_srv_conf_st *conf;
+	ngx_http_ether_ssl_srv_conf_st *conf;
 	const ngx_ether_key_st *key;
 	const EVP_AEAD *aead;
 #if NGX_DEBUG
@@ -395,11 +395,11 @@ static int ngx_http_ether_ssl_session_ticket_key_enc(ngx_ssl_conn_t *ssl_conn, u
 		return -1;
 	}
 
-	if (RAND_bytes(nonce, EVP_AEAD_nonce_length(aead)) != 1) {
+	if (!EVP_AEAD_CTX_init(ctx, aead, key->key, key->len, EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
 		return -1;
 	}
 
-	if (!EVP_AEAD_CTX_init(ctx, aead, key->key, key->len, EVP_AEAD_DEFAULT_TAG_LENGTH, NULL)) {
+	if (!ngx_ether_get_nonce(&conf->peer, nonce, EVP_AEAD_nonce_length(aead))) {
 		return -1;
 	}
 

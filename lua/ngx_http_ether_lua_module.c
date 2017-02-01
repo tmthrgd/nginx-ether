@@ -84,6 +84,7 @@ static int ngx_http_ether_lua_new(lua_State *L);
 static int ngx_http_ether_lua_default_key(lua_State *L);
 static int ngx_http_ether_lua_get_key(lua_State *L);
 static int ngx_http_ether_lua_has_default_key(lua_State *L);
+static int ngx_http_ether_lua_get_nonce(lua_State *L);
 static int ngx_http_ether_lua_memc_op_cmd(lua_State *L, protocol_binary_command cmd);
 static int ngx_http_ether_lua_memc_op(lua_State *L);
 #define DECLARE_RESTY_ETHER_MEMC_OP(op, name) \
@@ -101,6 +102,7 @@ static const luaL_Reg ngx_http_ether_lua_meths[] = {
 	{ "default_key", ngx_http_ether_lua_default_key },
 	{ "get_key", ngx_http_ether_lua_get_key },
 	{ "has_default_key", ngx_http_ether_lua_has_default_key },
+	{ "get_nonce", ngx_http_ether_lua_get_nonce },
 	{ "memc_op", ngx_http_ether_lua_memc_op },
 #define PUSH_FUNC_RESTY_ETHER_MEMC_OP(op, name) \
 	{ "memc_" #name, ngx_http_ether_lua_memc_##name },
@@ -404,6 +406,51 @@ static int ngx_http_ether_lua_has_default_key(lua_State *L)
 	ud = luaL_checkudata(L, 1, "_M");
 
 	lua_pushboolean(L, ud->peer.default_key != NULL);
+	return 1;
+}
+
+static int ngx_http_ether_lua_get_nonce(lua_State *L)
+{
+	int n;
+	ngx_http_ether_lua_userdata_st *ud;
+	const ngx_ether_key_st *key;
+	const u_char *name;
+	size_t len;
+	u_char nonce[16];
+
+	n = lua_gettop(L);
+	if (n != 3) {
+		return luaL_error(L, "attempt to pass %d arguments, but accepted 3", n);
+	}
+
+	ud = luaL_checkudata(L, 1, "_M");
+
+	name = (const u_char *)luaL_checklstring(L, 2, &len);
+	if (len != SSL_TICKET_KEY_NAME_LEN) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "invalid key name length");
+		return 2;
+	}
+
+	len = luaL_checknumber(L, 3);
+	if (len > sizeof(nonce)) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "invalid nonce length");
+		return 2;
+	}
+
+	key = ngx_ether_get_key(&ud->peer, name);
+	if (!key) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "unknown key");
+		return 2;
+	}
+
+	if (!ngx_ether_get_nonce(&ud->peer, nonce, len)) {
+		return luaL_error(L, "ngx_ether_get_nonce failed");
+	}
+
+	lua_pushlstring(L, (const char *)nonce, len);
 	return 1;
 }
 

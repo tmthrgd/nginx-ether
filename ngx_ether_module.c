@@ -149,6 +149,15 @@ ngx_int_t ngx_ether_create_peer(ngx_ether_peer_st *peer)
 		uint64_t u64;
 		uint8_t byte[sizeof(uint64_t)];
 	} seq;
+#pragma pack(push, 1)
+	union {
+		struct {
+			uint64_t seq;
+			uint64_t id;
+		};
+		uint8_t byte[2*sizeof(uint64_t)];
+	} nonce;
+#pragma pack(pop)
 
 	if (peer->serf.prefix.len > NGX_ETHER_SERF_MAX_KEY_PREFIX_LEN
 		|| peer->memc.prefix.len > NGX_ETHER_MEMC_MAX_KEY_PREFIX_LEN) {
@@ -214,6 +223,14 @@ ngx_int_t ngx_ether_create_peer(ngx_ether_peer_st *peer)
 	} while (!seq.u64);
 
 	peer->serf.seq = seq.u64;
+
+	if (RAND_bytes(nonce.byte, sizeof(nonce.byte)) != 1) {
+		ngx_log_error(NGX_LOG_EMERG, peer->log, 0, "RAND_bytes failed");
+		return NGX_ERROR;
+	}
+
+	peer->nonce.id = nonce.id;
+	peer->nonce.seq = nonce.seq;
 
 	peer->serf.send.tag = peer->pool;
 
