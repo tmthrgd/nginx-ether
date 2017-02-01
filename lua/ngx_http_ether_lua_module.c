@@ -413,36 +413,20 @@ static int ngx_http_ether_lua_get_nonce(lua_State *L)
 {
 	int n;
 	ngx_http_ether_lua_userdata_st *ud;
-	const ngx_ether_key_st *key;
-	const u_char *name;
-	size_t len;
 	u_char nonce[16];
+	size_t len;
 
 	n = lua_gettop(L);
-	if (n != 3) {
-		return luaL_error(L, "attempt to pass %d arguments, but accepted 3", n);
+	if (n != 2) {
+		return luaL_error(L, "attempt to pass %d arguments, but accepted 2", n);
 	}
 
 	ud = luaL_checkudata(L, 1, "_M");
 
-	name = (const u_char *)luaL_checklstring(L, 2, &len);
-	if (len != SSL_TICKET_KEY_NAME_LEN) {
-		lua_pushnil(L);
-		lua_pushliteral(L, "invalid key name length");
-		return 2;
-	}
-
-	len = luaL_checknumber(L, 3);
+	len = luaL_checknumber(L, 2);
 	if (len > sizeof(nonce)) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "invalid nonce length");
-		return 2;
-	}
-
-	key = ngx_ether_get_key(&ud->peer, name);
-	if (!key) {
-		lua_pushnil(L);
-		lua_pushliteral(L, "unknown key");
 		return 2;
 	}
 
