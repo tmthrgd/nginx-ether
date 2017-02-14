@@ -647,7 +647,7 @@ static ngx_ssl_session_t *ngx_http_ether_ssl_get_session_handler(ngx_ssl_conn_t 
 	}
 
 	*copy = 0;
-	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len);
+	sess = SSL_SESSION_from_bytes(CBS_data(&cbs), plaintext_len, ssl_ctx);
 	if (sess) {
 		ngx_memcpy(sess->session_id, id, len);
 		sess->session_id_length = len;
